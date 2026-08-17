@@ -39,7 +39,7 @@ Synchronization is fail-closed:
 - Initial load builds a candidate history and state, then swaps both only after every page and event validates.
 - Incremental sync uses a cloned cursor and applies a fully validated delta atomically.
 - Never automatically fall back to a full rebuild after an incremental error.
-- Reject unknown schema versions, item kinds, actions, malformed payloads, cursor regression, and no-progress pagination.
+- Reject unknown schema versions, business-entity kinds, actions, malformed payloads, cursor regression, and no-progress pagination. Versioned `Settings<digits>` records are the explicit exception: they are account metadata and must be ignored so settings-only version bumps cannot block the task graph.
 
 Writes continue to use the unofficial Things Cloud endpoint so the server remains remote and multi-user. Preserve these safeguards:
 
