@@ -1,7 +1,10 @@
 package thingscloud
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -32,6 +35,52 @@ func TestClient_Histories(t *testing.T) {
 			t.Error("Expected history request to fail, but didn't")
 		}
 	})
+}
+
+type testIdentifiable struct {
+	ID string `json:"-"`
+	T  int    `json:"t"`
+}
+
+func (i testIdentifiable) UUID() string { return i.ID }
+
+func TestHistoryWriteRejectsMalformedCommitResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"server-head-index":`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "test@example.com", "password")
+	h := &History{Client: c, ID: "history", LatestServerIndex: 7, LatestSchemaVersion: 301}
+	if err := h.Write(testIdentifiable{ID: "task-1", T: 1}); err == nil {
+		t.Fatal("expected malformed response error")
+	}
+	if h.LatestServerIndex != 7 {
+		t.Fatalf("LatestServerIndex mutated to %d", h.LatestServerIndex)
+	}
+}
+
+func TestHistoryWriteRejectsUnsupportedSchema(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"server-head-index": 9})
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "test@example.com", "password")
+	h := &History{Client: c, ID: "history", LatestServerIndex: 8, LatestSchemaVersion: 302}
+	if err := h.Write(testIdentifiable{ID: "task-1", T: 1}); err == nil {
+		t.Fatal("expected unsupported schema error")
+	}
+	if calls != 0 {
+		t.Fatalf("commit endpoint called %d times", calls)
+	}
 }
 
 func TestClient_CreateHistory(t *testing.T) {

@@ -1,7 +1,6 @@
 package thingscloud
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,8 @@ import (
 
 const (
 	// APIEndpoint is the public culturedcode https endpoint
-	APIEndpoint = "https://cloud.culturedcode.com"
+	APIEndpoint        = "https://cloud.culturedcode.com"
+	defaultHTTPTimeout = 30 * time.Second
 )
 
 var (
@@ -113,6 +113,19 @@ func WithProxy(proxyURL *url.URL) ClientOption {
 	}
 }
 
+// WithRequestInterval overrides the default one-request-per-second limiter.
+// A non-positive interval disables throttling and is intended for isolated
+// tests; production callers should keep the conservative default.
+func WithRequestInterval(interval time.Duration) ClientOption {
+	return func(c *Client) {
+		if interval <= 0 {
+			c.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+			return
+		}
+		c.rateLimiter = rate.NewLimiter(rate.Every(interval), 1)
+	}
+}
+
 type service struct {
 	client *Client
 }
@@ -125,7 +138,7 @@ func New(endpoint, email, password string, opts ...ClientOption) *Client {
 		password:    password,
 		ClientInfo:  DefaultClientInfo(),
 		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
-		client:      &http.Client{},
+		client:      &http.Client{Timeout: defaultHTTPTimeout},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -139,7 +152,7 @@ func New(endpoint, email, password string, opts ...ClientOption) *Client {
 const ThingsUserAgent = "ThingsMac/32209501"
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	if err := c.rateLimiter.Wait(context.Background()); err != nil {
+	if err := c.rateLimiter.Wait(req.Context()); err != nil {
 		return nil, fmt.Errorf("rate limit wait: %w", err)
 	}
 

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"fmt"
 	// "fmt"
 	"sort"
 
@@ -247,13 +248,40 @@ func (s *State) updateTag(item things.TagActionItem) *things.Tag {
 
 // Update applies all items to update the aggregated state
 func (s *State) Update(items ...things.Item) error {
+	// Validate the whole batch first. Advancing a sync cursor after silently
+	// skipping a future or malformed event would make the local state permanently
+	// incomplete, so updates are all-or-nothing with respect to decoding.
+	for _, rawItem := range items {
+		if rawItem.Action != things.ItemActionCreated && rawItem.Action != things.ItemActionModified && rawItem.Action != things.ItemActionDeleted {
+			return fmt.Errorf("item %s (%s) has unsupported action %d", rawItem.UUID, rawItem.Kind, rawItem.Action)
+		}
+		var target any
+		switch rawItem.Kind {
+		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+			target = &things.TaskActionItemPayload{}
+		case things.ItemKindChecklistItem, things.ItemKindChecklistItem2, things.ItemKindChecklistItem3:
+			target = &things.CheckListActionItemPayload{}
+		case things.ItemKindArea, things.ItemKindArea3, things.ItemKindAreaPlain:
+			target = &things.AreaActionItemPayload{}
+		case things.ItemKindTag, things.ItemKindTag4, things.ItemKindTagPlain:
+			target = &things.TagActionItemPayload{}
+		case things.ItemKindTombstone:
+			target = &things.TombstoneActionItemPayload{}
+		case things.ItemKindSettings:
+			continue
+		default:
+			return fmt.Errorf("item %s has unsupported kind %q", rawItem.UUID, rawItem.Kind)
+		}
+		if err := json.Unmarshal(rawItem.P, target); err != nil {
+			return fmt.Errorf("decode item %s (%s): %w", rawItem.UUID, rawItem.Kind, err)
+		}
+	}
+
 	for _, rawItem := range items {
 		switch rawItem.Kind {
 		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			item := things.TaskActionItem{Item: rawItem}
-			if err := json.Unmarshal(rawItem.P, &item.P); err != nil {
-				continue // Skip items that can't be parsed
-			}
+			_ = json.Unmarshal(rawItem.P, &item.P)
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -268,9 +296,7 @@ func (s *State) Update(items ...things.Item) error {
 
 		case things.ItemKindChecklistItem, things.ItemKindChecklistItem2, things.ItemKindChecklistItem3:
 			item := things.CheckListActionItem{Item: rawItem}
-			if err := json.Unmarshal(rawItem.P, &item.P); err != nil {
-				continue // Skip unparseable items
-			}
+			_ = json.Unmarshal(rawItem.P, &item.P)
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -285,9 +311,7 @@ func (s *State) Update(items ...things.Item) error {
 
 		case things.ItemKindArea, things.ItemKindArea3, things.ItemKindAreaPlain:
 			item := things.AreaActionItem{Item: rawItem}
-			if err := json.Unmarshal(rawItem.P, &item.P); err != nil {
-				continue // Skip unparseable items
-			}
+			_ = json.Unmarshal(rawItem.P, &item.P)
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -303,9 +327,7 @@ func (s *State) Update(items ...things.Item) error {
 
 		case things.ItemKindTag, things.ItemKindTag4, things.ItemKindTagPlain:
 			item := things.TagActionItem{Item: rawItem}
-			if err := json.Unmarshal(rawItem.P, &item.P); err != nil {
-				continue // Skip unparseable items
-			}
+			_ = json.Unmarshal(rawItem.P, &item.P)
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -320,17 +342,15 @@ func (s *State) Update(items ...things.Item) error {
 
 		case things.ItemKindTombstone:
 			item := things.TombstoneActionItem{Item: rawItem}
-			if err := json.Unmarshal(rawItem.P, &item.P); err != nil {
-				continue
-			}
+			_ = json.Unmarshal(rawItem.P, &item.P)
 			oid := item.P.DeletedObjectID
 			delete(s.Tasks, oid)
 			delete(s.Areas, oid)
 			delete(s.Tags, oid)
 			delete(s.CheckListItems, oid)
 
-		default:
-			// Unsupported kind: skip
+		case things.ItemKindSettings:
+			// Settings do not contribute to the task graph.
 		}
 	}
 	return nil
