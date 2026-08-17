@@ -955,7 +955,7 @@ var DocsPageHTML = `<!DOCTYPE html>
 
   <div class="tool-entry">
     <div class="tool-entry-name">things_diagnose</div>
-    <div class="tool-entry-desc">Run full diagnostic of the Things Cloud sync pipeline</div>
+    <div class="tool-entry-desc">Run a read-only diagnostic against the account's authoritative history and fail-closed sync pipeline</div>
     <div class="no-params">No parameters</div>
   </div>
 </div>
@@ -1046,21 +1046,22 @@ var DocsPageHTML = `<!DOCTYPE html>
 
   <div class="tool-entry">
     <div class="tool-entry-name">things_edit_item</div>
-    <div class="tool-entry-desc">Edit a task or project (only provided fields change). Completing a recurring task completes only the current instance.</div>
+    <div class="tool-entry-desc">Edit a task or project (only provided fields change). Completing a recurring task completes only the current instance; stopping recurrence requires explicit confirmation.</div>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Item UUID</td></tr>
       <tr><td><span class="param-name">title</span></td><td class="param-type">string</td><td>New title</td></tr>
-      <tr><td><span class="param-name">note</span></td><td class="param-type">string</td><td>New notes</td></tr>
+      <tr><td><span class="param-name">note</span></td><td class="param-type">string</td><td>New notes; empty string clears them</td></tr>
       <tr><td><span class="param-name">schedule</span></td><td class="param-type">string</td><td>today, tonight, anytime, someday, inbox, or YYYY-MM-DD (Upcoming, auto-moves to Today when due)</td></tr>
-      <tr><td><span class="param-name">deadline</span></td><td class="param-type">string</td><td>YYYY-MM-DD</td></tr>
+      <tr><td><span class="param-name">deadline</span></td><td class="param-type">string</td><td>YYYY-MM-DD, or "none" to clear</td></tr>
       <tr><td><span class="param-name">area_uuid</span></td><td class="param-type">string</td><td>Move to area</td></tr>
       <tr><td><span class="param-name">project_uuid</span></td><td class="param-type">string</td><td>Move to project</td></tr>
       <tr><td><span class="param-name">heading_uuid</span></td><td class="param-type">string</td><td>Move to heading</td></tr>
-      <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs</td></tr>
+      <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs; empty string clears them</td></tr>
       <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD, or "none" to clear (use with reminder_time)</td></tr>
       <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>
       <tr><td><span class="param-name">recurrence</span></td><td class="param-type">string</td><td>daily, weekly, monthly, yearly, etc. Use "none" to clear.</td></tr>
+      <tr><td><span class="param-name">confirm_destructive</span></td><td class="param-type">bool</td><td>Must be true when recurrence is "none"</td></tr>
       <tr><td><span class="param-name">status</span></td><td class="param-type">enum</td><td>pending, completed, canceled, trashed, restored</td></tr>
     </table>
   </div>
@@ -1093,6 +1094,7 @@ var DocsPageHTML = `<!DOCTYPE html>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Area UUID</td></tr>
+      <tr><td><span class="param-name">confirm</span><span class="param-required">required</span></td><td class="param-type">bool</td><td>Must be true to confirm permanent deletion</td></tr>
     </table>
   </div>
 
@@ -1102,6 +1104,7 @@ var DocsPageHTML = `<!DOCTYPE html>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Tag UUID</td></tr>
+      <tr><td><span class="param-name">confirm</span><span class="param-required">required</span></td><td class="param-type">bool</td><td>Must be true to confirm permanent deletion</td></tr>
     </table>
   </div>
 </div>
@@ -1143,6 +1146,7 @@ var DocsPageHTML = `<!DOCTYPE html>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Checklist item UUID</td></tr>
+      <tr><td><span class="param-name">confirm</span><span class="param-required">required</span></td><td class="param-type">bool</td><td>Must be true to confirm permanent deletion</td></tr>
     </table>
   </div>
 </div>
@@ -1150,21 +1154,23 @@ var DocsPageHTML = `<!DOCTYPE html>
 <!-- Output Format -->
 <div class="output-section">
   <h3>Output Format</h3>
-  <p>Tasks are returned in the following JSON shape:</p>
+  <p>All 23 tools declare an MCP <code>outputSchema</code>. Successful calls return schema-validated <code>structuredContent</code> in a stable <code>data</code> envelope, plus an equivalent JSON text fallback for older clients:</p>
   <pre>{
-  "uuid": "...",
-  "title": "...",
-  "note": "...",
-  "status": "pending | completed | canceled",
-  "schedule": "inbox | today | tonight | anytime | someday | upcoming",
-  "scheduledDate": "YYYY-MM-DD",
-  "deadlineDate": "YYYY-MM-DD",
-  "creationDate": "YYYY-MM-DDTHH:MM:SSZ",
-  "modificationDate": "YYYY-MM-DDTHH:MM:SSZ",
-  "completionDate": "YYYY-MM-DDTHH:MM:SSZ",
-  "areas": [{"uuid": "...", "name": "..."}],
-  "project": {"uuid": "...", "name": "..."},
-  "tags": [{"uuid": "...", "name": "..."}]
+  "data": {
+    "uuid": "...",
+    "title": "...",
+    "note": "...",
+    "status": "pending | completed | canceled",
+    "schedule": "inbox | today | tonight | anytime | someday | upcoming",
+    "scheduledDate": "YYYY-MM-DD",
+    "deadlineDate": "YYYY-MM-DD",
+    "creationDate": "YYYY-MM-DDTHH:MM:SSZ",
+    "modificationDate": "YYYY-MM-DDTHH:MM:SSZ",
+    "completionDate": "YYYY-MM-DDTHH:MM:SSZ",
+    "areas": [{"uuid": "...", "name": "..."}],
+    "project": {"uuid": "...", "name": "..."},
+    "tags": [{"uuid": "...", "name": "..."}]
+  }
 }</pre>
 </div>
 
@@ -1558,7 +1564,7 @@ var HowItWorksPageHTML = `<!DOCTYPE html>
     <div class="arch-box highlight">Things Cloud MCP Server<span class="arch-sub">This project</span></div>
     <div class="arch-arrow"><span class="arch-arrow-icon">&darr;</span><span class="arch-arrow-label">Things Cloud API</span></div>
     <div class="arch-box">Things Cloud<span class="arch-sub">Apple sync service</span></div>
-    <div class="arch-arrow"><span class="arch-arrow-icon">&darr;</span><span class="arch-arrow-label">iCloud Sync</span></div>
+    <div class="arch-arrow"><span class="arch-arrow-icon">&darr;</span><span class="arch-arrow-label">Things Cloud Sync</span></div>
     <div class="arch-box">Things 3<span class="arch-sub">iPhone / iPad / Mac</span></div>
   </div>
 </div>
@@ -1570,7 +1576,7 @@ var HowItWorksPageHTML = `<!DOCTYPE html>
   <div class="warning-box">
     <div class="warning-title">&#9888;&#65039; Unofficial API</div>
     <p>This project uses a reverse-engineered, unofficial API to communicate with Things Cloud. While we have tested it thoroughly, there is always a risk when using unofficial APIs.</p>
-    <p><strong>Before connecting:</strong> Make sure your Things 3 data is backed up. Things automatically syncs to iCloud, but you may also want to export your data via File &rarr; Export in Things for Mac.</p>
+    <p><strong>Before connecting:</strong> Keep a current Things for Mac backup and verify that it can be restored. Sync is not a substitute for a recoverable backup.</p>
     <p>The authors are not responsible for any data loss.</p>
   </div>
 </div>
@@ -1584,6 +1590,9 @@ var HowItWorksPageHTML = `<!DOCTYPE html>
     <li><span class="cap-dot"></span> Create new tasks, projects, headings, areas, and tags</li>
     <li><span class="cap-dot"></span> Edit tasks and projects &mdash; title, notes, schedule, deadline, tags, status</li>
     <li><span class="cap-dot"></span> Move items to trash</li>
+    <li><span class="cap-dot"></span> Serialize each account's sync and write operations to prevent cursor races</li>
+    <li><span class="cap-dot"></span> Fail closed on unknown schemas, malformed events, and uncertain commits; never retry an uncertain write</li>
+    <li><span class="cap-dot"></span> Require explicit confirmation for permanent deletions and stopping recurrence</li>
     <li><span class="cap-dot"></span> All changes sync to your Things apps in real-time via Things Cloud</li>
   </ul>
 </div>

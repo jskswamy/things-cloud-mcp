@@ -17,5 +17,8 @@ COPY --from=builder /app/things-mcp /usr/local/bin/things-mcp
 EXPOSE 8080
 
 ENV PORT=8080
+ENV DATA_DIR=/data
+
+VOLUME ["/data"]
 
 CMD ["things-mcp"]

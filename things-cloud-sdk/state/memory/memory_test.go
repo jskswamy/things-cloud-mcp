@@ -476,3 +476,32 @@ func TestState_TasksWithoutArea_DeletedParent(t *testing.T) {
 	result := s.TasksWithoutArea()
 	_ = result // just verify no panic
 }
+
+func TestStateUpdateRejectsMalformedKnownItem(t *testing.T) {
+	s := NewState()
+	err := s.Update(things.Item{
+		UUID:   "broken-task",
+		Kind:   things.ItemKindTask,
+		Action: things.ItemActionCreated,
+		P:      []byte(`{"tt":`),
+	})
+	if err == nil {
+		t.Fatal("expected malformed payload error")
+	}
+	if len(s.Tasks) != 0 {
+		t.Fatalf("state changed after malformed payload: %#v", s.Tasks)
+	}
+}
+
+func TestStateUpdateRejectsUnknownKind(t *testing.T) {
+	s := NewState()
+	err := s.Update(things.Item{
+		UUID:   "future-item",
+		Kind:   things.ItemKind("Task7"),
+		Action: things.ItemActionCreated,
+		P:      []byte(`{}`),
+	})
+	if err == nil {
+		t.Fatal("expected unknown kind error")
+	}
+}

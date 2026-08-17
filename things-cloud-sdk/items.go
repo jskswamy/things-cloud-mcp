@@ -24,7 +24,15 @@ type itemsResponse struct {
 	StartTotalContentSize  int               `json:"start-total-content-size"`
 	EndTotalContentSize    int               `json:"end-total-content-size"`
 	SchemaVersion          int               `json:"schema"`
+	LatestSchemaVersion    int               `json:"latest-schema-version"`
 	CurrentItemIndex       int               `json:"current-item-index"`
+}
+
+func (r itemsResponse) schemaVersion() int {
+	if r.SchemaVersion != 0 {
+		return r.SchemaVersion
+	}
+	return r.LatestSchemaVersion
 }
 
 // ItemsOptions allows a client to pickup changes from a specific index
@@ -37,15 +45,21 @@ type ItemsOptions struct {
 //
 // Note that if a item was changed multiple times it will be present multiple times in the result too.
 func (h *History) Items(opts ItemsOptions) ([]Item, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if opts.StartIndex < 0 {
+		return nil, false, fmt.Errorf("start index must be non-negative")
+	}
 	req, err := http.NewRequest("GET", fmt.Sprintf("/version/1/history/%s/items", h.ID), nil)
+	if err != nil {
+		return nil, false, err
+	}
 
 	values := req.URL.Query()
 	values.Set("start-index", strconv.Itoa(opts.StartIndex))
 	req.URL.RawQuery = values.Encode()
 
-	if err != nil {
-		return nil, false, err
-	}
 	resp, err := h.Client.do(req)
 	if err != nil {
 		return nil, false, err
@@ -64,6 +78,20 @@ func (h *History) Items(opts ItemsOptions) ([]Item, bool, error) {
 	if err := json.Unmarshal(bs, &v); err != nil {
 		return nil, false, err
 	}
+	schemaVersion := v.schemaVersion()
+	if schemaVersion > SupportedSchemaVersion {
+		return nil, false, fmt.Errorf("unsupported Things Cloud schema %d (maximum supported %d)", schemaVersion, SupportedSchemaVersion)
+	}
+	if v.CurrentItemIndex < opts.StartIndex {
+		return nil, false, fmt.Errorf("server cursor regressed from requested index %d to %d", opts.StartIndex, v.CurrentItemIndex)
+	}
+	nextLoadedIndex := opts.StartIndex + len(v.Items)
+	if len(v.Items) == 0 && opts.StartIndex < v.CurrentItemIndex {
+		return nil, false, fmt.Errorf("server returned no progress at index %d while current index is %d", opts.StartIndex, v.CurrentItemIndex)
+	}
+	if schemaVersion == SupportedSchemaVersion && nextLoadedIndex > v.CurrentItemIndex {
+		return nil, false, fmt.Errorf("server page ends at index %d beyond current index %d", nextLoadedIndex, v.CurrentItemIndex)
+	}
 	var items = []Item{}
 	for _, m := range v.Items {
 		for id, item := range m {
@@ -71,10 +99,11 @@ func (h *History) Items(opts ItemsOptions) ([]Item, bool, error) {
 			items = append(items, item)
 		}
 	}
-	h.LoadedServerIndex = h.LoadedServerIndex + len(v.Items)
+	h.LoadedServerIndex = nextLoadedIndex
 	h.LatestServerIndex = v.CurrentItemIndex
+	h.LatestSchemaVersion = schemaVersion
 	h.EndTotalContentSize = v.EndTotalContentSize
 	h.LatestTotalContentSize = v.LatestTotalContentSize
-	hasMoreItems := h.LoadedServerIndex < h.LatestServerIndex
+	hasMoreItems := len(v.Items) > 0 && h.LoadedServerIndex < h.LatestServerIndex
 	return items, hasMoreItems, nil
 }

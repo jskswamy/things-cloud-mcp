@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -27,21 +29,22 @@ import (
 type OAuthServer struct {
 	um            *UserManager
 	jwtSecret     []byte
-	clients       map[string]*OAuthClient    // client_id -> client
-	authCodes     map[string]*AuthCode        // code -> auth code data
-	refreshTokens map[string]*RefreshToken    // token -> refresh data
-	credentials   map[string]string           // email -> password (from successful authorizations)
-	db            *sql.DB                     // SQLite database
+	credentialKey []byte
+	clients       map[string]*OAuthClient  // client_id -> client
+	authCodes     map[string]*AuthCode     // code -> auth code data
+	refreshTokens map[string]*RefreshToken // token -> refresh data
+	credentials   map[string]string        // email -> password (from successful authorizations)
+	db            *sql.DB                  // SQLite database
 	mu            sync.RWMutex
 }
 
 type OAuthClient struct {
-	ClientID      string   `json:"client_id"`
-	ClientSecret  string   `json:"client_secret,omitempty"`
-	ClientName    string   `json:"client_name"`
-	RedirectURIs  []string `json:"redirect_uris"`
-	GrantTypes    []string `json:"grant_types"`
-	ResponseTypes []string `json:"response_types"`
+	ClientID      string    `json:"client_id"`
+	ClientSecret  string    `json:"client_secret,omitempty"`
+	ClientName    string    `json:"client_name"`
+	RedirectURIs  []string  `json:"redirect_uris"`
+	GrantTypes    []string  `json:"grant_types"`
+	ResponseTypes []string  `json:"response_types"`
 	CreatedAt     time.Time `json:"created_at,omitempty"`
 }
 
@@ -69,6 +72,9 @@ type RefreshToken struct {
 func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
+	}
+	if err := os.Chmod(dataDir, 0700); err != nil {
+		log.Fatalf("Failed to secure data directory %s: %v", dataDir, err)
 	}
 
 	dbPath := filepath.Join(dataDir, "oauth.db")
@@ -100,6 +106,9 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 			log.Fatalf("Failed to create table: %v", err)
 		}
 	}
+	if err := os.Chmod(dbPath, 0600); err != nil {
+		log.Fatalf("Failed to secure OAuth database: %v", err)
+	}
 
 	o := &OAuthServer{
 		um:            um,
@@ -109,6 +118,11 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 		refreshTokens: make(map[string]*RefreshToken),
 		credentials:   make(map[string]string),
 	}
+	credentialKey, err := loadOrCreateCredentialKey(db, dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize OAuth credential encryption: %v", err)
+	}
+	o.credentialKey = credentialKey
 
 	// Load JWT secret: env > DB > generate
 	if envSecret := os.Getenv("JWT_SECRET"); envSecret != "" {
@@ -132,7 +146,6 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 	// Load clients
 	rows, err := db.Query(`SELECT client_id, client_secret, client_name, redirect_uris, grant_types, response_types, created_at FROM clients`)
 	if err == nil {
-		defer rows.Close()
 		for rows.Next() {
 			var c OAuthClient
 			var redirectURIs, grantTypes, responseTypes, createdAt string
@@ -145,24 +158,52 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 			c.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 			o.clients[c.ClientID] = &c
 		}
+		rows.Close()
 	}
 
 	// Load refresh tokens (skip expired)
 	now := time.Now()
 	rows2, err := db.Query(`SELECT token, email, password, client_id, expires_at FROM refresh_tokens`)
 	if err == nil {
-		defer rows2.Close()
+		type refreshMigration struct{ oldToken, newToken, encrypted string }
+		var migrations []refreshMigration
 		for rows2.Next() {
 			var rt RefreshToken
+			var storedToken string
+			var storedPassword string
 			var expiresAt string
-			if err := rows2.Scan(&rt.Token, &rt.Email, &rt.Password, &rt.ClientID, &expiresAt); err != nil {
+			if err := rows2.Scan(&storedToken, &rt.Email, &storedPassword, &rt.ClientID, &expiresAt); err != nil {
 				continue
+			}
+			tokenKey, legacyToken := normalizeStoredRefreshToken(storedToken)
+			rt.Token = tokenKey
+			password, legacy, err := o.decryptPassword(storedPassword)
+			if err != nil {
+				log.Printf("Skipping refresh token with unreadable encrypted credential")
+				continue
+			}
+			rt.Password = password
+			encryptedPassword := storedPassword
+			if legacy {
+				encryptedPassword, err = o.encryptPassword(password)
+				if err != nil {
+					log.Fatalf("Failed to migrate refresh credential encryption: %v", err)
+				}
+			}
+			if legacy || legacyToken {
+				migrations = append(migrations, refreshMigration{storedToken, tokenKey, encryptedPassword})
 			}
 			rt.ExpiresAt, _ = time.Parse(time.RFC3339, expiresAt)
 			if now.After(rt.ExpiresAt) {
 				continue
 			}
-			o.refreshTokens[rt.Token] = &rt
+			o.refreshTokens[tokenKey] = &rt
+		}
+		rows2.Close()
+		for _, migration := range migrations {
+			if _, err := db.Exec(`UPDATE refresh_tokens SET token=?, password=? WHERE token=?`, migration.newToken, migration.encrypted, migration.oldToken); err != nil {
+				log.Fatalf("Failed to migrate refresh credential: %v", err)
+			}
 		}
 	}
 	// Clean expired from DB
@@ -171,13 +212,32 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 	// Load credentials
 	rows3, err := db.Query(`SELECT email, password FROM credentials`)
 	if err == nil {
-		defer rows3.Close()
+		type credentialMigration struct{ email, encrypted string }
+		var migrations []credentialMigration
 		for rows3.Next() {
-			var email, password string
-			if err := rows3.Scan(&email, &password); err != nil {
+			var email, storedPassword string
+			if err := rows3.Scan(&email, &storedPassword); err != nil {
+				continue
+			}
+			password, legacy, err := o.decryptPassword(storedPassword)
+			if err != nil {
+				log.Printf("Skipping user with unreadable encrypted credential")
 				continue
 			}
 			o.credentials[email] = password
+			if legacy {
+				encrypted, err := o.encryptPassword(password)
+				if err != nil {
+					log.Fatalf("Failed to migrate credential encryption: %v", err)
+				}
+				migrations = append(migrations, credentialMigration{email, encrypted})
+			}
+		}
+		rows3.Close()
+		for _, migration := range migrations {
+			if _, err := db.Exec(`UPDATE credentials SET password=? WHERE email=?`, migration.encrypted, migration.email); err != nil {
+				log.Fatalf("Failed to migrate credential: %v", err)
+			}
 		}
 	}
 
@@ -185,6 +245,153 @@ func NewOAuthServer(um *UserManager, dataDir string) *OAuthServer {
 		len(o.clients), len(o.refreshTokens), len(o.credentials))
 
 	return o
+}
+
+const encryptedPasswordPrefix = "enc:v1:"
+const refreshTokenHashPrefix = "sha256:"
+
+var credentialAAD = []byte("things-cloud-mcp/oauth-password/v1")
+
+func loadOrCreateCredentialKey(db *sql.DB, dataDir string) ([]byte, error) {
+	if envSecret := os.Getenv("CREDENTIALS_SECRET"); envSecret != "" {
+		digest := sha256.Sum256([]byte(envSecret))
+		return digest[:], nil
+	}
+
+	keyPath := filepath.Join(dataDir, "credentials.key")
+	if encoded, err := os.ReadFile(keyPath); err == nil {
+		key, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(encoded)))
+		if err != nil || len(key) != 32 {
+			return nil, fmt.Errorf("invalid credential key file %s", keyPath)
+		}
+		if err := os.Chmod(keyPath, 0600); err != nil {
+			return nil, fmt.Errorf("secure credential key permissions: %w", err)
+		}
+		return key, nil
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read credential key: %w", err)
+	}
+
+	var encryptedRows int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM credentials WHERE password LIKE 'enc:v1:%') +
+		(SELECT COUNT(*) FROM refresh_tokens WHERE password LIKE 'enc:v1:%')`).Scan(&encryptedRows); err != nil {
+		return nil, fmt.Errorf("check encrypted credentials: %w", err)
+	}
+	if encryptedRows > 0 {
+		return nil, fmt.Errorf("credentials.key is missing while encrypted credentials exist; restore the key or set CREDENTIALS_SECRET")
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate credential key: %w", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(key)
+	if err := os.WriteFile(keyPath, []byte(encoded+"\n"), 0600); err != nil {
+		return nil, fmt.Errorf("write credential key: %w", err)
+	}
+	return key, nil
+}
+
+func (o *OAuthServer) passwordAEAD() (cipher.AEAD, error) {
+	block, err := aes.NewCipher(o.credentialKey)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func (o *OAuthServer) encryptPassword(password string) (string, error) {
+	aead, err := o.passwordAEAD()
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := aead.Seal(nil, nonce, []byte(password), credentialAAD)
+	payload := append(nonce, sealed...)
+	return encryptedPasswordPrefix + base64.RawURLEncoding.EncodeToString(payload), nil
+}
+
+// decryptPassword returns legacy=true for a plaintext row so startup can
+// transparently migrate databases created by older releases.
+func (o *OAuthServer) decryptPassword(stored string) (password string, legacy bool, err error) {
+	if !strings.HasPrefix(stored, encryptedPasswordPrefix) {
+		return stored, true, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(stored, encryptedPasswordPrefix))
+	if err != nil {
+		return "", false, fmt.Errorf("decode encrypted credential: %w", err)
+	}
+	aead, err := o.passwordAEAD()
+	if err != nil {
+		return "", false, err
+	}
+	if len(payload) < aead.NonceSize() {
+		return "", false, fmt.Errorf("encrypted credential is truncated")
+	}
+	nonce, ciphertext := payload[:aead.NonceSize()], payload[aead.NonceSize():]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, credentialAAD)
+	if err != nil {
+		return "", false, fmt.Errorf("decrypt credential: %w", err)
+	}
+	return string(plaintext), false, nil
+}
+
+func (o *OAuthServer) persistCredential(email, password string) error {
+	encrypted, err := o.encryptPassword(password)
+	if err != nil {
+		return err
+	}
+	_, err = o.db.Exec(`INSERT OR REPLACE INTO credentials (email, password) VALUES (?, ?)`, email, encrypted)
+	return err
+}
+
+func (o *OAuthServer) persistRefreshToken(rt *RefreshToken) error {
+	encrypted, err := o.encryptPassword(rt.Password)
+	if err != nil {
+		return err
+	}
+	_, err = o.db.Exec(`INSERT INTO refresh_tokens VALUES(?,?,?,?,?)`,
+		refreshTokenKey(rt.Token), rt.Email, encrypted, rt.ClientID, rt.ExpiresAt.Format(time.RFC3339))
+	return err
+}
+
+func refreshTokenKey(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return refreshTokenHashPrefix + fmt.Sprintf("%x", digest[:])
+}
+
+func normalizeStoredRefreshToken(stored string) (key string, legacy bool) {
+	if strings.HasPrefix(stored, refreshTokenHashPrefix) {
+		return stored, false
+	}
+	return refreshTokenKey(stored), true
+}
+
+func (o *OAuthServer) rotateRefreshToken(oldToken string, next *RefreshToken) error {
+	encryptedPassword, err := o.encryptPassword(next.Password)
+	if err != nil {
+		return err
+	}
+	tx, err := o.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM refresh_tokens WHERE token=?`, refreshTokenKey(oldToken)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO credentials (email, password) VALUES (?, ?)`, next.Email, encryptedPassword); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO refresh_tokens VALUES(?,?,?,?,?)`,
+		refreshTokenKey(next.Token), next.Email, encryptedPassword, next.ClientID, next.ExpiresAt.Format(time.RFC3339)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +420,7 @@ func getBaseURL(r *http.Request) string {
 func verifyPKCE(codeVerifier, codeChallenge string) bool {
 	h := sha256.Sum256([]byte(codeVerifier))
 	computed := base64.RawURLEncoding.EncodeToString(h[:])
-	return computed == codeChallenge
+	return hmac.Equal([]byte(computed), []byte(codeChallenge))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -319,9 +526,9 @@ func (o *OAuthServer) handleProtectedResourceMetadata(w http.ResponseWriter, r *
 	}
 	base := getBaseURL(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"resource":                base,
-		"authorization_servers":   []string{base},
-		"scopes_supported":       []string{"things:manage"},
+		"resource":                 base,
+		"authorization_servers":    []string{base},
+		"scopes_supported":         []string{"things:manage"},
 		"bearer_methods_supported": []string{"header"},
 	})
 }
@@ -538,10 +745,7 @@ func (o *OAuthServer) handleAuthorizePost(w http.ResponseWriter, r *http.Request
 
 	o.mu.Lock()
 	o.authCodes[code] = authCode
-	o.credentials[email] = password
 	o.mu.Unlock()
-
-	o.db.Exec(`INSERT OR REPLACE INTO credentials (email, password) VALUES (?, ?)`, email, password)
 
 	log.Printf("OAuth: auth code issued for %s (client=%s)", email, clientID)
 
@@ -701,11 +905,15 @@ func (o *OAuthServer) handleAuthCodeGrant(w http.ResponseWriter, r *http.Request
 	email := ac.Email
 	password := ac.Password
 
-	// Store credentials for Bearer token resolution
-	o.credentials[email] = password
 	o.mu.Unlock()
 
-	o.db.Exec(`INSERT OR REPLACE INTO credentials (email, password) VALUES (?, ?)`, email, password)
+	if err := o.persistCredential(email, password); err != nil {
+		o.mu.Lock()
+		ac.Used = false
+		o.mu.Unlock()
+		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to store credentials securely")
+		return
+	}
 
 	// Generate tokens
 	base := getBaseURL(r)
@@ -717,6 +925,9 @@ func (o *OAuthServer) handleAuthCodeGrant(w http.ResponseWriter, r *http.Request
 		"scope": "things:manage",
 	})
 	if err != nil {
+		o.mu.Lock()
+		ac.Used = false
+		o.mu.Unlock()
 		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
@@ -729,12 +940,17 @@ func (o *OAuthServer) handleAuthCodeGrant(w http.ResponseWriter, r *http.Request
 		ClientID:  clientID,
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour), // 30 days
 	}
+	if err := o.persistRefreshToken(rt); err != nil {
+		o.mu.Lock()
+		ac.Used = false
+		o.mu.Unlock()
+		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to store refresh token securely")
+		return
+	}
 	o.mu.Lock()
-	o.refreshTokens[refreshTok] = rt
+	o.credentials[email] = password
+	o.refreshTokens[refreshTokenKey(refreshTok)] = rt
 	o.mu.Unlock()
-
-	o.db.Exec(`INSERT INTO refresh_tokens VALUES(?,?,?,?,?)`,
-		rt.Token, rt.Email, rt.Password, rt.ClientID, rt.ExpiresAt.Format(time.RFC3339))
 
 	log.Printf("OAuth: tokens issued for %s", email)
 
@@ -755,17 +971,18 @@ func (o *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	refreshKey := refreshTokenKey(refreshTok)
 	o.mu.Lock()
-	rt, ok := o.refreshTokens[refreshTok]
+	rt, ok := o.refreshTokens[refreshKey]
 	if !ok {
 		o.mu.Unlock()
 		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "unknown refresh token")
 		return
 	}
 	if time.Now().After(rt.ExpiresAt) {
-		delete(o.refreshTokens, refreshTok)
+		delete(o.refreshTokens, refreshKey)
 		o.mu.Unlock()
-		o.db.Exec(`DELETE FROM refresh_tokens WHERE token=?`, refreshTok)
+		o.db.Exec(`DELETE FROM refresh_tokens WHERE token=?`, refreshKey)
 		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "refresh token expired")
 		return
 	}
@@ -774,15 +991,15 @@ func (o *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	password := rt.Password
 	clientID := rt.ClientID
 
-	// Delete old refresh token
-	delete(o.refreshTokens, refreshTok)
-
-	// Store credentials
-	o.credentials[email] = password
+	// Reserve the one-time token in memory so concurrent refresh attempts cannot
+	// both succeed. The database rotation below is transactional.
+	delete(o.refreshTokens, refreshKey)
 	o.mu.Unlock()
-
-	o.db.Exec(`DELETE FROM refresh_tokens WHERE token=?`, refreshTok)
-	o.db.Exec(`INSERT OR REPLACE INTO credentials (email, password) VALUES (?, ?)`, email, password)
+	restoreOldToken := func() {
+		o.mu.Lock()
+		o.refreshTokens[refreshKey] = rt
+		o.mu.Unlock()
+	}
 
 	// Generate new tokens
 	base := getBaseURL(r)
@@ -794,6 +1011,7 @@ func (o *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 		"scope": "things:manage",
 	})
 	if err != nil {
+		restoreOldToken()
 		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
@@ -806,12 +1024,15 @@ func (o *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 		ClientID:  clientID,
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
 	}
+	if err := o.rotateRefreshToken(refreshTok, newRT); err != nil {
+		restoreOldToken()
+		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to store refresh token securely")
+		return
+	}
 	o.mu.Lock()
-	o.refreshTokens[newRefreshTok] = newRT
+	o.credentials[email] = password
+	o.refreshTokens[refreshTokenKey(newRefreshTok)] = newRT
 	o.mu.Unlock()
-
-	o.db.Exec(`INSERT INTO refresh_tokens VALUES(?,?,?,?,?)`,
-		newRT.Token, newRT.Email, newRT.Password, newRT.ClientID, newRT.ExpiresAt.Format(time.RFC3339))
 
 	log.Printf("OAuth: tokens refreshed for %s", email)
 

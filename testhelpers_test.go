@@ -141,7 +141,7 @@ func (fc *fakeCloud) getCommitLog() []json.RawMessage {
 func newTestThingsMCP(t *testing.T, fc *fakeCloud) *ThingsMCP {
 	t.Helper()
 
-	c := thingscloud.New(fc.server.URL, fc.email, "testpass")
+	c := thingscloud.New(fc.server.URL, fc.email, "testpass", thingscloud.WithRequestInterval(0))
 	if _, err := c.Verify(); err != nil {
 		t.Fatalf("fake Verify failed: %v", err)
 	}

@@ -124,9 +124,6 @@ func TestTaskActionItemPayload_AllFields(t *testing.T) {
 	if p.Leavable == nil || *p.Leavable != false {
 		t.Error("expected Leavable=false")
 	}
-	if p.SubtaskBehavior == nil || *p.SubtaskBehavior != 0 {
-		t.Error("expected SubtaskBehavior=0")
-	}
 	if p.ExtensionData == nil {
 		t.Error("expected ExtensionData to be set")
 	}

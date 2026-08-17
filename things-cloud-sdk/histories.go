@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"net/http/httputil"
 	"strconv"
+	"sync"
 )
+
+const SupportedSchemaVersion = 301
 
 // History represents a synchronization stream. It's identified with a uuid v4
 type History struct {
+	mu                     sync.Mutex
 	ID                     string
 	Client                 *Client
 	LatestServerIndex      int
@@ -31,6 +33,9 @@ type historyResponse struct {
 
 // Sync ensures the history object is able to write to things
 func (h *History) Sync() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	req, err := http.NewRequest("GET", fmt.Sprintf("/version/1/history/%s/items", h.ID), nil)
 	if err != nil {
 		return err
@@ -53,9 +58,15 @@ func (h *History) Sync() error {
 		return err
 	}
 	var v itemsResponse
-	json.Unmarshal(bs, &v)
+	if err := json.Unmarshal(bs, &v); err != nil {
+		return fmt.Errorf("decode history sync response: %w", err)
+	}
+	schemaVersion := v.schemaVersion()
+	if schemaVersion > SupportedSchemaVersion {
+		return fmt.Errorf("unsupported Things Cloud schema %d (maximum supported %d)", schemaVersion, SupportedSchemaVersion)
+	}
 	h.LatestServerIndex = v.CurrentItemIndex
-	h.LatestSchemaVersion = v.SchemaVersion
+	h.LatestSchemaVersion = schemaVersion
 	h.LatestTotalContentSize = v.LatestTotalContentSize
 	return nil
 }
@@ -214,6 +225,19 @@ type commitResponse struct {
 	ServerHeadIndex int `json:"server-head-index"`
 }
 
+// CommitUncertainError means the request may have reached Things Cloud, but the
+// client could not prove whether the commit was accepted. Callers must reconcile
+// by reading history before deciding whether a retry is safe.
+type CommitUncertainError struct {
+	Err error
+}
+
+func (e *CommitUncertainError) Error() string {
+	return fmt.Sprintf("commit outcome is uncertain: %v", e.Err)
+}
+
+func (e *CommitUncertainError) Unwrap() error { return e.Err }
+
 // Identifiable abstracts different thingscloud write requests. As we need to provide a map
 // indexed by UUID, all we care about is the ID of the change, not the change itself
 type Identifiable interface {
@@ -221,8 +245,27 @@ type Identifiable interface {
 }
 
 func (h *History) Write(items ...Identifiable) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if len(items) == 0 {
+		return fmt.Errorf("commit contains no items")
+	}
+	if h.LatestSchemaVersion > SupportedSchemaVersion {
+		return fmt.Errorf("refusing write for unsupported Things Cloud schema %d (maximum supported %d)", h.LatestSchemaVersion, SupportedSchemaVersion)
+	}
+
 	m := map[string]interface{}{}
 	for _, item := range items {
+		if item == nil {
+			return fmt.Errorf("commit contains a nil item")
+		}
+		if item.UUID() == "" {
+			return fmt.Errorf("commit contains an item with an empty UUID")
+		}
+		if _, exists := m[item.UUID()]; exists {
+			return fmt.Errorf("commit contains duplicate UUID %q", item.UUID())
+		}
 		m[item.UUID()] = item
 	}
 	bs, err := json.Marshal(m)
@@ -230,6 +273,9 @@ func (h *History) Write(items ...Identifiable) error {
 		return err
 	}
 	req, err := http.NewRequest("POST", fmt.Sprintf("/version/1/history/%s/commit", h.ID), bytes.NewReader(bs))
+	if err != nil {
+		return err
+	}
 	req.Header.Add("Schema", "301")
 	req.Header.Add("Push-Priority", "5")
 	// Full App-Instance-Id matching Things format: {hash}-{bundleId}-{hash}
@@ -242,17 +288,12 @@ func (h *History) Write(items ...Identifiable) error {
 	query.Add("ancestor-index", strconv.Itoa(h.LatestServerIndex))
 	query.Add("_cnt", "1")
 	req.URL.RawQuery = query.Encode()
-	if err != nil {
-		return err
-	}
 	resp, err := h.Client.do(req)
 	if err != nil {
-		return err
+		return &CommitUncertainError{Err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		bs, _ := httputil.DumpResponse(resp, true)
-		log.Println(string(bs))
 		return newAPIError(resp)
 	}
 	rs, err := io.ReadAll(resp.Body)
@@ -260,7 +301,12 @@ func (h *History) Write(items ...Identifiable) error {
 		return err
 	}
 	var w commitResponse
-	json.Unmarshal(rs, &w)
+	if err := json.Unmarshal(rs, &w); err != nil {
+		return &CommitUncertainError{Err: fmt.Errorf("decode commit response: %w", err)}
+	}
+	if w.ServerHeadIndex != h.LatestServerIndex+1 {
+		return &CommitUncertainError{Err: fmt.Errorf("unexpected server head index %d after ancestor %d", w.ServerHeadIndex, h.LatestServerIndex)}
+	}
 	h.LatestServerIndex = w.ServerHeadIndex
 	return nil
 }

@@ -522,7 +522,7 @@ ssh wenbo@e.wenbo.io 'systemctl --user restart things-mcp'
 
 ```bash
 curl -s -X POST http://localhost:28063/mcp \
-  -H "Authorization: Basic $(echo -n 'pixelwenbo@gmail.com:bmp6125388th' | base64)" \
+  -H "Authorization: Basic $THINGS_BASIC_AUTH" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"things_create_task","arguments":{"title":"test recurring","schedule":"today","recurrence":"daily"}}}'
 ```
@@ -544,7 +544,7 @@ Use `things_debug_raw` on the template UUID (from `rt`). Verify:
 
 ```bash
 curl -s -X POST http://localhost:28063/mcp \
-  -H "Authorization: Basic $(echo -n 'pixelwenbo@gmail.com:bmp6125388th' | base64)" \
+  -H "Authorization: Basic $THINGS_BASIC_AUTH" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"things_edit_item","arguments":{"uuid":"<INSTANCE_UUID>","status":"completed"}}}'
 ```
