@@ -60,6 +60,10 @@ func (s *Syncer) processItems(items []things.Item, baseIndex int) ([]Change, err
 
 // processItem routes an item to the correct handler based on its Kind.
 func (s *Syncer) processItem(item things.Item, serverIndex int, ts time.Time) ([]Change, error) {
+	if things.IsSettingsKind(item.Kind) {
+		// Versioned settings are account metadata, not task-graph entities.
+		return nil, nil
+	}
 	switch item.Kind {
 	case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 		return s.processTaskItem(item, serverIndex, ts)
@@ -71,9 +75,6 @@ func (s *Syncer) processItem(item things.Item, serverIndex int, ts time.Time) ([
 		return s.processChecklistItem(item, serverIndex, ts)
 	case things.ItemKindTombstone:
 		return s.processTombstone(item, serverIndex, ts)
-	case things.ItemKindSettings:
-		// Settings items are ignored for now
-		return nil, nil
 	default:
 		// Unknown item kind - create an UnknownChange
 		return []Change{UnknownChange{

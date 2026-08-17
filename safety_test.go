@@ -150,6 +150,19 @@ func TestIncrementalSyncDoesNotAdvanceCursorOnLaterPageFailure(t *testing.T) {
 	}
 }
 
+func TestFullRebuildIgnoresSettings5Metadata(t *testing.T) {
+	fc := newFakeCloud("test@example.com",
+		thingscloud.Item{UUID: "settings-5", Kind: thingscloud.ItemKind("Settings5"), Action: thingscloud.ItemActionModified, P: json.RawMessage(`{"example":true}`)},
+		makeTaskItem("task-1", withTitle("Visible after settings metadata")),
+	)
+	defer fc.Close()
+
+	tmcp := newTestThingsMCP(t, fc)
+	if task := tmcp.state.Tasks["task-1"]; task == nil || task.Title != "Visible after settings metadata" {
+		t.Fatalf("task graph was not rebuilt after Settings5: %#v", task)
+	}
+}
+
 func TestUncertainCommitIsReconciledWithoutRetryingWrite(t *testing.T) {
 	var mu sync.Mutex
 	var committed map[string]json.RawMessage

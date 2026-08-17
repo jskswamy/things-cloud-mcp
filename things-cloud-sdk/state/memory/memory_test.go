@@ -505,3 +505,21 @@ func TestStateUpdateRejectsUnknownKind(t *testing.T) {
 		t.Fatal("expected unknown kind error")
 	}
 }
+
+func TestStateUpdateIgnoresVersionedSettings(t *testing.T) {
+	s := NewState()
+	for _, kind := range []things.ItemKind{things.ItemKindSettings, "Settings5", "Settings42"} {
+		err := s.Update(things.Item{
+			UUID:   "settings-" + string(kind),
+			Kind:   kind,
+			Action: things.ItemAction(99),
+			P:      []byte(`not-json`),
+		})
+		if err != nil {
+			t.Fatalf("settings kind %q blocked state update: %v", kind, err)
+		}
+	}
+	if len(s.Tasks) != 0 || len(s.Areas) != 0 || len(s.Tags) != 0 || len(s.CheckListItems) != 0 {
+		t.Fatalf("settings changed task graph: %#v", s)
+	}
+}

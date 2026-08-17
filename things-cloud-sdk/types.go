@@ -76,6 +76,24 @@ var (
 	ItemKindTombstone ItemKind = "Tombstone2"
 )
 
+// IsSettingsKind reports whether kind is a versioned Things settings record.
+// Settings are account metadata and do not contribute to the task graph. Treat
+// all numeric versions as ignorable so a settings-only schema bump cannot block
+// task reads and writes, while unknown task/area/tag/checklist kinds still fail.
+func IsSettingsKind(kind ItemKind) bool {
+	const prefix = "Settings"
+	value := string(kind)
+	if len(value) <= len(prefix) || value[:len(prefix)] != prefix {
+		return false
+	}
+	for _, r := range value[len(prefix):] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Timestamp allows unix epochs represented as float or ints to be unmarshalled
 // into time.Time objects
 type Timestamp time.Time
