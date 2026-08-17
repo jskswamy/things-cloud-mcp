@@ -821,6 +821,16 @@ func isToday(t time.Time) bool {
 	return t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day()
 }
 
+// effectiveScheduledDate returns the date Things uses for the visible
+// occurrence. tir advances for recurring instances while sr may remain on the
+// first occurrence.
+func effectiveScheduledDate(task *thingscloud.Task) *time.Time {
+	if task.TodayIndexRefDate != nil {
+		return task.TodayIndexRefDate
+	}
+	return task.ScheduledDate
+}
+
 // isScheduledForTodayOrPast returns true if the task should appear in
 // the Today filter. Uses TodayIndexRefDate (tir) which correctly tracks
 // the current occurrence date for recurring tasks, falling back to
@@ -831,10 +841,7 @@ func isScheduledForTodayOrPast(task *thingscloud.Task) bool {
 	}
 	// Prefer tir: it reflects the actual "in Today" date and is correct
 	// for recurring tasks (sr stays at the first occurrence date).
-	date := task.TodayIndexRefDate
-	if date == nil {
-		date = task.ScheduledDate
-	}
+	date := effectiveScheduledDate(task)
 	if date == nil {
 		return false
 	}
@@ -843,14 +850,25 @@ func isScheduledForTodayOrPast(task *thingscloud.Task) bool {
 	return !date.After(todayEnd)
 }
 
+// taskScheduleString keeps schedule filters and output aligned. Pending tasks
+// that Things has promoted from Upcoming/Anytime because their date arrived
+// are reported as Today/Tonight; completed and canceled items retain their raw
+// schedule classification for history queries.
+func taskScheduleString(task *thingscloud.Task) string {
+	if task.Status == thingscloud.TaskStatusPending && isScheduledForTodayOrPast(task) {
+		if task.StartBucket == 1 {
+			return "tonight"
+		}
+		return "today"
+	}
+	return scheduleString(task.Schedule, effectiveScheduledDate(task), task.StartBucket)
+}
+
 func (t *ThingsMCP) taskToOutput(task *thingscloud.Task) TaskOutput {
 	state := t.getState()
 	// For recurring instances, tir tracks the current occurrence date;
 	// sr may differ. Prefer tir when available.
-	effectiveDate := task.ScheduledDate
-	if task.TodayIndexRefDate != nil {
-		effectiveDate = task.TodayIndexRefDate
-	}
+	effectiveDate := effectiveScheduledDate(task)
 	typeStr := "task"
 	if task.Type == thingscloud.TaskTypeProject {
 		typeStr = "project"
@@ -861,7 +879,7 @@ func (t *ThingsMCP) taskToOutput(task *thingscloud.Task) TaskOutput {
 		Title:    task.Title,
 		Note:     task.Note,
 		Status:   statusString(task.Status),
-		Schedule: scheduleString(task.Schedule, effectiveDate, task.StartBucket),
+		Schedule: taskScheduleString(task),
 	}
 	if effectiveDate != nil && effectiveDate.Year() > 1970 {
 		s := effectiveDate.Format("2006-01-02")
@@ -1434,6 +1452,49 @@ func (t *ThingsMCP) taskMatchesArea(task *thingscloud.Task, areaUUID string) boo
 	return false
 }
 
+// taskHasPendingAncestors reports whether every structural container of task
+// is pending. Unless includeTrash is true, every container must also be outside
+// Trash. Things moves a completed/canceled/trashed project and all descendants
+// to Logbook/Trash even when a child's own status remains pending, so active
+// list queries must account for the full container chain. Missing references
+// and cycles fail closed because the task cannot be placed reliably.
+func (t *ThingsMCP) taskHasPendingAncestors(task *thingscloud.Task, includeTrash bool) bool {
+	state := t.getState()
+	visiting := map[string]bool{task.UUID: true}
+
+	var visit func(*thingscloud.Task) bool
+	visit = func(item *thingscloud.Task) bool {
+		containerIDs := make([]string, 0, len(item.ParentTaskIDs)+len(item.ActionGroupIDs))
+		containerIDs = append(containerIDs, item.ParentTaskIDs...)
+		containerIDs = append(containerIDs, item.ActionGroupIDs...)
+		for _, id := range containerIDs {
+			container, ok := state.Tasks[id]
+			if !ok || container == nil || container.Status != thingscloud.TaskStatusPending || (!includeTrash && container.InTrash) {
+				return false
+			}
+			if visiting[id] {
+				return false
+			}
+			visiting[id] = true
+			if !visit(container) {
+				return false
+			}
+			delete(visiting, id)
+		}
+		return true
+	}
+
+	return visit(task)
+}
+
+func (t *ThingsMCP) taskHasActiveAncestors(task *thingscloud.Task) bool {
+	return t.taskHasPendingAncestors(task, false)
+}
+
+func (t *ThingsMCP) taskIsEffectivelyActive(task *thingscloud.Task) bool {
+	return task.Status == thingscloud.TaskStatusPending && !task.InTrash && t.taskHasActiveAncestors(task)
+}
+
 func containsStr(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {
@@ -1504,22 +1565,35 @@ func (t *ThingsMCP) validateTaskUUID(uuid string) error {
 
 func (t *ThingsMCP) validateProjectUUID(uuid string) error {
 	state := t.getState()
-	for _, task := range state.Tasks {
-		if task.UUID == uuid && task.Type == thingscloud.TaskTypeProject && !task.InTrash {
-			return nil
-		}
+	task, ok := state.Tasks[uuid]
+	if !ok || task == nil || task.Type != thingscloud.TaskTypeProject {
+		return fmt.Errorf("project not found: %s", uuid)
 	}
-	return fmt.Errorf("project not found: %s", uuid)
+	if task.InTrash {
+		return fmt.Errorf("project is in trash: %s", uuid)
+	}
+	if task.Status != thingscloud.TaskStatusPending {
+		return fmt.Errorf("project is %s: %s", statusString(task.Status), uuid)
+	}
+	return nil
 }
 
 func (t *ThingsMCP) validateHeadingUUID(uuid string) error {
 	state := t.getState()
-	for _, task := range state.Tasks {
-		if task.UUID == uuid && task.Type == thingscloud.TaskTypeHeading && !task.InTrash {
-			return nil
-		}
+	task, ok := state.Tasks[uuid]
+	if !ok || task == nil || task.Type != thingscloud.TaskTypeHeading {
+		return fmt.Errorf("heading not found: %s", uuid)
 	}
-	return fmt.Errorf("heading not found: %s", uuid)
+	if task.InTrash {
+		return fmt.Errorf("heading is in trash: %s", uuid)
+	}
+	if task.Status != thingscloud.TaskStatusPending {
+		return fmt.Errorf("heading is %s: %s", statusString(task.Status), uuid)
+	}
+	if !t.taskHasActiveAncestors(task) {
+		return fmt.Errorf("heading is inside an inactive project: %s", uuid)
+	}
+	return nil
 }
 
 func (t *ThingsMCP) validateAreaUUID(uuid string) error {
@@ -2479,11 +2553,11 @@ func (t *ThingsMCP) diagnoseQueryTests(report *diagReport, allWarnings *[]string
 			}
 			switch task.Type {
 			case thingscloud.TaskTypeTask:
-				if task.Status != thingscloud.TaskStatusCompleted && task.Status != thingscloud.TaskStatusCanceled {
+				if t.taskIsEffectivelyActive(task) {
 					activeTasks++
 				}
 			case thingscloud.TaskTypeProject:
-				if task.Status != thingscloud.TaskStatusCompleted {
+				if task.Status == thingscloud.TaskStatusPending {
 					activeProjects++
 				}
 			}
@@ -2652,7 +2726,7 @@ func (t *ThingsMCP) handleFindTasks(_ context.Context, req mcp.CallToolRequest) 
 				continue
 			}
 		default: // "pending"
-			if task.Status != 0 {
+			if task.Status != thingscloud.TaskStatusPending || (!inTrash && task.InTrash) || !t.taskHasPendingAncestors(task, inTrash) {
 				continue
 			}
 		}
@@ -2668,7 +2742,7 @@ func (t *ThingsMCP) handleFindTasks(_ context.Context, req mcp.CallToolRequest) 
 					continue
 				}
 			} else {
-				taskSchedule := scheduleString(task.Schedule, task.ScheduledDate, task.StartBucket)
+				taskSchedule := taskScheduleString(task)
 				if taskSchedule != schedule {
 					continue
 				}
@@ -2678,10 +2752,7 @@ func (t *ThingsMCP) handleFindTasks(_ context.Context, req mcp.CallToolRequest) 
 		// Date range filters (exclusive)
 		// Use effective date: TodayIndexRefDate (tir) tracks the current
 		// occurrence date for recurring instances; fall back to ScheduledDate.
-		effectiveScheduled := task.ScheduledDate
-		if task.TodayIndexRefDate != nil {
-			effectiveScheduled = task.TodayIndexRefDate
-		}
+		effectiveScheduled := effectiveScheduledDate(task)
 		if scheduledBeforeDate != nil {
 			if effectiveScheduled == nil || !effectiveScheduled.Before(*scheduledBeforeDate) {
 				continue
@@ -3099,7 +3170,7 @@ func (t *ThingsMCP) handleFindProjects(_ context.Context, req mcp.CallToolReques
 					continue
 				}
 			} else {
-				taskSchedule := scheduleString(task.Schedule, task.ScheduledDate, task.StartBucket)
+				taskSchedule := taskScheduleString(task)
 				if taskSchedule != schedule {
 					continue
 				}
@@ -3109,10 +3180,7 @@ func (t *ThingsMCP) handleFindProjects(_ context.Context, req mcp.CallToolReques
 		// Date range filters (exclusive)
 		// Use effective date: TodayIndexRefDate (tir) tracks the current
 		// occurrence date for recurring instances; fall back to ScheduledDate.
-		effectiveScheduled := task.ScheduledDate
-		if task.TodayIndexRefDate != nil {
-			effectiveScheduled = task.TodayIndexRefDate
-		}
+		effectiveScheduled := effectiveScheduledDate(task)
 		if scheduledBeforeDate != nil {
 			if effectiveScheduled == nil || !effectiveScheduled.Before(*scheduledBeforeDate) {
 				continue
@@ -3331,7 +3399,7 @@ func (t *ThingsMCP) handleOverview(_ context.Context, req mcp.CallToolRequest) (
 		if isUntitledTask(task) {
 			continue
 		}
-		if task.Status != 0 || task.InTrash {
+		if !t.taskIsEffectivelyActive(task) {
 			continue
 		}
 		if isScheduledForTodayOrPast(task) {
@@ -3357,7 +3425,7 @@ func (t *ThingsMCP) handleOverview(_ context.Context, req mcp.CallToolRequest) (
 		if isUntitledTask(task) {
 			continue
 		}
-		if task.Status != 0 || task.InTrash {
+		if !t.taskIsEffectivelyActive(task) {
 			continue
 		}
 		if todaySet[task.UUID] {
@@ -4026,7 +4094,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 		// --- Read tools ---
 		{
 			Tool: mcp.NewTool("things_find_tasks",
-				mcp.WithDescription("List tasks from Things 3 with optional filters. Returns an array of task objects, each containing uuid, title, status (pending/completed/canceled), schedule (inbox/today/tonight/anytime/someday/upcoming), and optional fields: note, scheduledDate, deadlineDate, reminderTime, recurrence, areas, project, tags. Use things_show_task to see full details including checklist items. Default: only pending (active) tasks. Use status parameter to query completed or canceled tasks. Note: schedule=today includes both regular and tonight tasks; use schedule=tonight to filter only tonight tasks."),
+				mcp.WithDescription("List tasks from Things 3 with optional filters. Returns an array of task objects, each containing uuid, title, status (pending/completed/canceled), schedule (inbox/today/tonight/anytime/someday/upcoming), and optional fields: note, scheduledDate, deadlineDate, reminderTime, recurrence, areas, project, tags. Use things_show_task to see full details including checklist items. Default: only active pending tasks; pending descendants of completed, canceled, or trashed containers are excluded to match Things app visibility. Use status parameter to query completed or canceled tasks. Note: schedule=today includes both regular and tonight tasks; use schedule=tonight to filter only tonight tasks."),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
@@ -4070,7 +4138,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithString("uuid", mcp.Required(), mcp.Description("Project UUID")),
-				mcp.WithString("status", mcp.Description("Filter child tasks by status (default: pending — only active tasks)"), mcp.Enum("pending", "completed", "canceled")),
+				mcp.WithString("status", mcp.Description("Filter child tasks by their own status (default: pending; a completed project's pending children remain inspectable here)"), mcp.Enum("pending", "completed", "canceled")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return t.handleShowProject(ctx, req)
@@ -4139,7 +4207,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 		},
 		{
 			Tool: mcp.NewTool("things_overview",
-				mcp.WithDescription("Returns a comprehensive snapshot of the user's task landscape in a single call. Includes all tags, the full area-to-project hierarchy (with IDs), today's items (tasks and projects), and upcoming scheduled/due items within a configurable lookahead window. Each item has a type field ('task' or 'project') to distinguish them. Use this as the first call in a session to orient yourself before drilling into specific tasks or projects."),
+				mcp.WithDescription("Returns a comprehensive snapshot of the user's active task landscape in a single call. Includes all tags, the active area-to-project hierarchy (with IDs), today's active items (tasks and projects), and active upcoming scheduled/due items within a configurable lookahead window. Descendants of completed, canceled, or trashed containers are excluded to match Things app visibility. Each item has a type field ('task' or 'project') to distinguish them. Use this as the first call in a session to orient yourself before drilling into specific tasks or projects."),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
@@ -4161,8 +4229,8 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("note", mcp.Description("Markdown-compatible note or description for the task")),
 				mcp.WithString("schedule", mcp.Description("When to schedule: today, tonight (today's tonight), anytime, someday, inbox, or a date (YYYY-MM-DD). Dates go to Upcoming and auto-move to Today when due.")),
 				mcp.WithString("deadline", mcp.Description("Deadline date in YYYY-MM-DD format, or \"none\" to clear")),
-				mcp.WithString("project_uuid", mcp.Description("UUID of the project to add this task to. Use things_find_projects to find project UUIDs.")),
-				mcp.WithString("heading_uuid", mcp.Description("UUID of the heading to place this task under within a project. Use things_find_headings to find heading UUIDs.")),
+				mcp.WithString("project_uuid", mcp.Description("UUID of the active pending project to add this task to. Completed, canceled, and trashed projects are rejected. Use things_find_projects to find project UUIDs.")),
+				mcp.WithString("heading_uuid", mcp.Description("UUID of an active heading inside an active pending project. Headings in completed, canceled, or trashed projects are rejected. Use things_find_headings to find heading UUIDs.")),
 				mcp.WithString("area_uuid", mcp.Description("UUID of the area to assign this task to. Use things_find_areas to find area UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs to apply. Use things_find_tags to find tag UUIDs.")),
 				mcp.WithString("checklist", mcp.Description("Comma-separated checklist item titles to create within the task")),
@@ -4180,7 +4248,7 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithString("title", mcp.Required(), mcp.Description("Heading title")),
-				mcp.WithString("project_uuid", mcp.Required(), mcp.Description("UUID of the project to add the heading to. Use things_find_projects to find project UUIDs.")),
+				mcp.WithString("project_uuid", mcp.Required(), mcp.Description("UUID of the active pending project to add the heading to. Completed, canceled, and trashed projects are rejected. Use things_find_projects to find project UUIDs.")),
 			),
 			Handler: wrap(func(t *ThingsMCP, ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return t.handleCreateHeading(ctx, req)
@@ -4299,8 +4367,8 @@ func defineTools(um *UserManager) []server.ServerTool {
 				mcp.WithString("schedule", mcp.Description("When to schedule: today, tonight (today's tonight), anytime, someday, inbox, or a date (YYYY-MM-DD). Dates go to Upcoming and auto-move to Today when due.")),
 				mcp.WithString("deadline", mcp.Description("Deadline date in YYYY-MM-DD format")),
 				mcp.WithString("area_uuid", mcp.Description("UUID of the area to assign to. Use things_find_areas to find area UUIDs.")),
-				mcp.WithString("project_uuid", mcp.Description("UUID of the project to move to. Use things_find_projects to find project UUIDs.")),
-				mcp.WithString("heading_uuid", mcp.Description("UUID of the heading to place under. Use things_find_headings to find heading UUIDs.")),
+				mcp.WithString("project_uuid", mcp.Description("UUID of the active pending project to move to. Completed, canceled, and trashed projects are rejected. Use things_find_projects to find project UUIDs.")),
+				mcp.WithString("heading_uuid", mcp.Description("UUID of an active heading inside an active pending project. Headings in completed, canceled, or trashed projects are rejected. Use things_find_headings to find heading UUIDs.")),
 				mcp.WithString("tags", mcp.Description("Comma-separated tag UUIDs (replaces all existing tags; empty string clears them). Use things_find_tags to find tag UUIDs.")),
 				mcp.WithString("reminder_date", mcp.Description("Reminder date in YYYY-MM-DD format, or \"none\" to clear. Must be used together with reminder_time.")),
 				mcp.WithString("reminder_time", mcp.Description("Reminder time in HH:MM 24-hour format (e.g. 09:00, 14:30). Must be used together with reminder_date.")),

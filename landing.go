@@ -857,7 +857,7 @@ var DocsPageHTML = `<!DOCTYPE html>
 
   <div class="tool-entry">
     <div class="tool-entry-name">things_find_tasks</div>
-    <div class="tool-entry-desc">List tasks with optional filters</div>
+    <div class="tool-entry-desc">List tasks with optional filters. Default pending results exclude descendants of completed, canceled, or trashed containers to match Things app visibility.</div>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">schedule</span></td><td class="param-type">enum</td><td>inbox, today, tonight, anytime, someday, upcoming</td></tr>
@@ -938,7 +938,7 @@ var DocsPageHTML = `<!DOCTYPE html>
 
   <div class="tool-entry">
     <div class="tool-entry-name">things_overview</div>
-    <div class="tool-entry-desc">Comprehensive snapshot: tags, area→project hierarchy, today's items (tasks &amp; projects), upcoming items. Each item has a <code>type</code> field.</div>
+    <div class="tool-entry-desc">Comprehensive active snapshot: tags, active area→project hierarchy, today's items (tasks &amp; projects), and upcoming items. Descendants of inactive containers are excluded. Each item has a <code>type</code> field.</div>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">lookahead_days</span></td><td class="param-type">number</td><td>Days ahead to scan for upcoming items (default: 7)</td></tr>
@@ -977,8 +977,8 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">note</span></td><td class="param-type">string</td><td>Task notes</td></tr>
       <tr><td><span class="param-name">schedule</span></td><td class="param-type">string</td><td>today, tonight, anytime, someday, inbox, or YYYY-MM-DD (Upcoming, auto-moves to Today when due)</td></tr>
       <tr><td><span class="param-name">deadline</span></td><td class="param-type">string</td><td>YYYY-MM-DD</td></tr>
-      <tr><td><span class="param-name">project_uuid</span></td><td class="param-type">string</td><td>Assign to project</td></tr>
-      <tr><td><span class="param-name">heading_uuid</span></td><td class="param-type">string</td><td>Assign to heading within project</td></tr>
+      <tr><td><span class="param-name">project_uuid</span></td><td class="param-type">string</td><td>Assign to an active pending project; inactive projects are rejected</td></tr>
+      <tr><td><span class="param-name">heading_uuid</span></td><td class="param-type">string</td><td>Assign to an active heading in an active pending project</td></tr>
       <tr><td><span class="param-name">area_uuid</span></td><td class="param-type">string</td><td>Assign to area</td></tr>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs</td></tr>
       <tr><td><span class="param-name">checklist</span></td><td class="param-type">string</td><td>Comma-separated checklist items</td></tr>
@@ -1011,7 +1011,7 @@ var DocsPageHTML = `<!DOCTYPE html>
     <table class="params-table">
       <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
       <tr><td><span class="param-name">title</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Heading title</td></tr>
-      <tr><td><span class="param-name">project_uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Parent project UUID</td></tr>
+      <tr><td><span class="param-name">project_uuid</span><span class="param-required">required</span></td><td class="param-type">string</td><td>Active pending parent project UUID; inactive projects are rejected</td></tr>
     </table>
   </div>
 
@@ -1055,8 +1055,8 @@ var DocsPageHTML = `<!DOCTYPE html>
       <tr><td><span class="param-name">schedule</span></td><td class="param-type">string</td><td>today, tonight, anytime, someday, inbox, or YYYY-MM-DD (Upcoming, auto-moves to Today when due)</td></tr>
       <tr><td><span class="param-name">deadline</span></td><td class="param-type">string</td><td>YYYY-MM-DD, or "none" to clear</td></tr>
       <tr><td><span class="param-name">area_uuid</span></td><td class="param-type">string</td><td>Move to area</td></tr>
-      <tr><td><span class="param-name">project_uuid</span></td><td class="param-type">string</td><td>Move to project</td></tr>
-      <tr><td><span class="param-name">heading_uuid</span></td><td class="param-type">string</td><td>Move to heading</td></tr>
+      <tr><td><span class="param-name">project_uuid</span></td><td class="param-type">string</td><td>Move to an active pending project; inactive projects are rejected</td></tr>
+      <tr><td><span class="param-name">heading_uuid</span></td><td class="param-type">string</td><td>Move to an active heading in an active pending project</td></tr>
       <tr><td><span class="param-name">tags</span></td><td class="param-type">string</td><td>Comma-separated tag UUIDs; empty string clears them</td></tr>
       <tr><td><span class="param-name">reminder_date</span></td><td class="param-type">string</td><td>YYYY-MM-DD, or "none" to clear (use with reminder_time)</td></tr>
       <tr><td><span class="param-name">reminder_time</span></td><td class="param-type">string</td><td>HH:MM 24h (use with reminder_date)</td></tr>

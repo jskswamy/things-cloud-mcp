@@ -44,6 +44,8 @@ Synchronization is fail-closed:
 Writes continue to use the unofficial Things Cloud endpoint so the server remains remote and multi-user. Preserve these safeguards:
 
 - Validate all item envelopes, UUIDs, relationships, dates, recurrence, and destructive confirmations before POST.
+- Active task lists inherit container state: a pending child of a completed, canceled, or trashed heading/project is not active and must not appear in default, Today, Upcoming, overview, or diagnostic active counts. Direct show/project-detail tools may still expose the child's raw status for inspection.
+- Creating or moving a task/heading requires every destination heading/project in its container chain to be pending and outside Trash; reject inactive destinations before POST.
 - A transport failure or malformed response after POST is an uncertain commit. Reconcile by reading the authoritative history; never retry that POST automatically.
 - After a confirmed commit, apply the exact validated events and server head locally so a successful write cannot be reported as a false failure.
 - Recurring creation is a single atomic commit containing a recurrence template and its visible instance.
