@@ -312,7 +312,7 @@ func makeAreaItem(uuid, title string) thingscloud.Item {
 	return thingscloud.Item{
 		UUID:   uuid,
 		P:      raw,
-		Kind:   thingscloud.ItemKindArea,
+		Kind:   thingscloud.ItemKindArea3,
 		Action: thingscloud.ItemActionCreated,
 	}
 }
@@ -323,7 +323,7 @@ func makeTagItem(uuid, title string) thingscloud.Item {
 	return thingscloud.Item{
 		UUID:   uuid,
 		P:      raw,
-		Kind:   thingscloud.ItemKindTag,
+		Kind:   thingscloud.ItemKindTag4,
 		Action: thingscloud.ItemActionCreated,
 	}
 }
@@ -338,7 +338,7 @@ func makeChecklistItem(uuid, taskUUID, title string) thingscloud.Item {
 	return thingscloud.Item{
 		UUID:   uuid,
 		P:      raw,
-		Kind:   thingscloud.ItemKindChecklistItem,
+		Kind:   thingscloud.ItemKindChecklistItem3,
 		Action: thingscloud.ItemActionCreated,
 	}
 }

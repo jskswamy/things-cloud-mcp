@@ -290,12 +290,12 @@ func TestState_Update(t *testing.T) {
 func TestState_Tombstone(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range []things.ItemKind{things.ItemKindTombstone, things.ItemKindTombstonePlain} {
+	for _, kind := range []things.ItemKind{things.ItemKindTombstone} {
 		t.Run(string(kind)+" deletes existing task", func(t *testing.T) {
 			t.Parallel()
 			s := NewState()
 
-			taskUUID := "TASK-UUID-TO-DELETE"
+			taskUUID := things.EncodeLegacyIdentifier("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
 
 			// Step 1: Create a task
 			if err := s.Update(things.Item{

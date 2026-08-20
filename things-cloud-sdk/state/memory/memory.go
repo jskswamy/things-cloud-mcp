@@ -30,6 +30,50 @@ func NewState() *State {
 	}
 }
 
+// Legacy history kinds use UUID-style identifiers. Things later migrated the
+// same objects to deterministic Base58 identifiers without emitting mapping
+// records, so replay must normalize both object keys and relationship fields.
+func isLegacyItemKind(kind things.ItemKind) bool {
+	switch kind {
+	case things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain,
+		things.ItemKindChecklistItem, things.ItemKindChecklistItem2,
+		things.ItemKindArea, things.ItemKindAreaPlain,
+		things.ItemKindTag, things.ItemKindTagPlain,
+		things.ItemKindTombstonePlain:
+		return true
+	default:
+		return false
+	}
+}
+
+func encodeLegacyIDs(ids []string) {
+	for i := range ids {
+		if things.ValidateUUID(ids[i]) == nil {
+			continue
+		}
+		ids[i] = things.EncodeLegacyIdentifier(ids[i])
+	}
+}
+
+func encodeLegacyTaskReferences(p *things.TaskActionItemPayload) {
+	if p.AreaIDs != nil {
+		encodeLegacyIDs(*p.AreaIDs)
+	}
+	if p.ParentTaskIDs != nil {
+		encodeLegacyIDs(*p.ParentTaskIDs)
+	}
+	if p.ActionGroupIDs != nil {
+		encodeLegacyIDs(*p.ActionGroupIDs)
+	}
+	encodeLegacyIDs(p.TagIDs)
+	if p.RecurrenceTaskIDs != nil {
+		encodeLegacyIDs(*p.RecurrenceTaskIDs)
+	}
+	if p.DelegateIDs != nil {
+		encodeLegacyIDs(*p.DelegateIDs)
+	}
+}
+
 func (s *State) updateTask(item things.TaskActionItem, rawP json.RawMessage) *things.Task {
 	t, ok := s.Tasks[item.UUID()]
 	if !ok {
@@ -282,10 +326,17 @@ func (s *State) Update(items ...things.Item) error {
 		if things.IsSettingsKind(rawItem.Kind) {
 			continue
 		}
+		legacy := isLegacyItemKind(rawItem.Kind)
+		if legacy && things.ValidateUUID(rawItem.UUID) != nil {
+			rawItem.UUID = things.EncodeLegacyIdentifier(rawItem.UUID)
+		}
 		switch rawItem.Kind {
 		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			item := things.TaskActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
+			if legacy {
+				encodeLegacyTaskReferences(&item.P)
+			}
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -301,6 +352,9 @@ func (s *State) Update(items ...things.Item) error {
 		case things.ItemKindChecklistItem, things.ItemKindChecklistItem2, things.ItemKindChecklistItem3:
 			item := things.CheckListActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
+			if legacy && item.P.TaskIDs != nil {
+				encodeLegacyIDs(*item.P.TaskIDs)
+			}
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -316,6 +370,9 @@ func (s *State) Update(items ...things.Item) error {
 		case things.ItemKindArea, things.ItemKindArea3, things.ItemKindAreaPlain:
 			item := things.AreaActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
+			if legacy {
+				encodeLegacyIDs(item.P.TagIDs)
+			}
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -332,6 +389,9 @@ func (s *State) Update(items ...things.Item) error {
 		case things.ItemKindTag, things.ItemKindTag4, things.ItemKindTagPlain:
 			item := things.TagActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
+			if legacy && item.P.ParentTagIDs != nil {
+				encodeLegacyIDs(*item.P.ParentTagIDs)
+			}
 
 			switch item.Action {
 			case things.ItemActionCreated:
@@ -348,6 +408,9 @@ func (s *State) Update(items ...things.Item) error {
 			item := things.TombstoneActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
 			oid := item.P.DeletedObjectID
+			if legacy && things.ValidateUUID(oid) != nil {
+				oid = things.EncodeLegacyIdentifier(oid)
+			}
 			delete(s.Tasks, oid)
 			delete(s.Areas, oid)
 			delete(s.Tags, oid)
