@@ -290,43 +290,45 @@ func TestState_Update(t *testing.T) {
 func TestState_Tombstone(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Tombstone deletes existing task", func(t *testing.T) {
-		t.Parallel()
-		s := NewState()
+	for _, kind := range []things.ItemKind{things.ItemKindTombstone, things.ItemKindTombstonePlain} {
+		t.Run(string(kind)+" deletes existing task", func(t *testing.T) {
+			t.Parallel()
+			s := NewState()
 
-		taskUUID := "TASK-UUID-TO-DELETE"
+			taskUUID := "TASK-UUID-TO-DELETE"
 
-		// Step 1: Create a task
-		if err := s.Update(things.Item{
-			UUID:   taskUUID,
-			Action: things.ItemActionCreated,
-			Kind:   things.ItemKindTask,
-			P:      json.RawMessage(newTaskPayload),
-		}); err != nil {
-			t.Fatal(err.Error())
-		}
+			// Step 1: Create a task
+			if err := s.Update(things.Item{
+				UUID:   taskUUID,
+				Action: things.ItemActionCreated,
+				Kind:   things.ItemKindTask,
+				P:      json.RawMessage(newTaskPayload),
+			}); err != nil {
+				t.Fatal(err.Error())
+			}
 
-		// Verify the task exists
-		if _, ok := s.Tasks[taskUUID]; !ok {
-			t.Fatal("Expected task to exist after creation")
-		}
+			// Verify the task exists
+			if _, ok := s.Tasks[taskUUID]; !ok {
+				t.Fatal("Expected task to exist after creation")
+			}
 
-		// Step 2: Create a Tombstone2 item referencing the task UUID
-		tombstonePayload := `{"dloid":"` + taskUUID + `","dld":1495662927.014228}`
-		if err := s.Update(things.Item{
-			UUID:   "TOMBSTONE-UUID",
-			Action: things.ItemActionCreated,
-			Kind:   things.ItemKindTombstone,
-			P:      json.RawMessage(tombstonePayload),
-		}); err != nil {
-			t.Fatal(err.Error())
-		}
+			// Step 2: Create a tombstone item referencing the task UUID.
+			tombstonePayload := `{"dloid":"` + taskUUID + `","dld":1495662927.014228}`
+			if err := s.Update(things.Item{
+				UUID:   "TOMBSTONE-UUID",
+				Action: things.ItemActionCreated,
+				Kind:   kind,
+				P:      json.RawMessage(tombstonePayload),
+			}); err != nil {
+				t.Fatal(err.Error())
+			}
 
-		// Step 3: Verify the task is deleted
-		if _, ok := s.Tasks[taskUUID]; ok {
-			t.Fatal("Expected task to be deleted after tombstone")
-		}
-	})
+			// Step 3: Verify the task is deleted
+			if _, ok := s.Tasks[taskUUID]; ok {
+				t.Fatal("Expected task to be deleted after tombstone")
+			}
+		})
+	}
 }
 
 func TestState_updateTag(t *testing.T) {

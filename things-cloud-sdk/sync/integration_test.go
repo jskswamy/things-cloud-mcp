@@ -147,6 +147,53 @@ func TestIntegration(t *testing.T) {
 	})
 }
 
+func TestLegacyTombstone(t *testing.T) {
+	t.Parallel()
+	syncer, err := Open(filepath.Join(t.TempDir(), "test.db"), nil)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer syncer.Close()
+
+	title := "Delete me"
+	taskPayload, err := json.Marshal(things.TaskActionItemPayload{Title: &title})
+	if err != nil {
+		t.Fatalf("marshal task payload: %v", err)
+	}
+	if _, err := syncer.processItems([]things.Item{{
+		UUID:   "legacy-delete-target",
+		Kind:   things.ItemKindTask,
+		Action: things.ItemActionCreated,
+		P:      taskPayload,
+	}}, 0); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := syncer.processItems([]things.Item{{
+		UUID:   "legacy-tombstone",
+		Kind:   things.ItemKindTombstonePlain,
+		Action: things.ItemActionCreated,
+		P:      json.RawMessage(`{"dloid":"legacy-delete-target","dld":1577577600}`),
+	}}, 1); err != nil {
+		t.Fatalf("process legacy Tombstone: %v", err)
+	}
+
+	var deleted int
+	if err := syncer.rawDB.QueryRow(`SELECT deleted FROM tasks WHERE uuid = ?`, "legacy-delete-target").Scan(&deleted); err != nil {
+		t.Fatalf("read deleted flag: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("legacy Tombstone left deleted flag = %d, want 1", deleted)
+	}
+	tasks, err := syncer.State().AllTasks(QueryOpts{IncludeCompleted: true, IncludeTrashed: true})
+	if err != nil {
+		t.Fatalf("list active tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("legacy Tombstone left task in active results: %#v", tasks)
+	}
+}
+
 func TestStateQueries(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "test.db")

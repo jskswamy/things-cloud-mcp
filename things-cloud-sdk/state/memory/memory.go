@@ -268,7 +268,7 @@ func (s *State) Update(items ...things.Item) error {
 			target = &things.AreaActionItemPayload{}
 		case things.ItemKindTag, things.ItemKindTag4, things.ItemKindTagPlain:
 			target = &things.TagActionItemPayload{}
-		case things.ItemKindTombstone:
+		case things.ItemKindTombstone, things.ItemKindTombstonePlain:
 			target = &things.TombstoneActionItemPayload{}
 		default:
 			return fmt.Errorf("item %s has unsupported kind %q", rawItem.UUID, rawItem.Kind)
@@ -344,7 +344,7 @@ func (s *State) Update(items ...things.Item) error {
 				// Unsupported action: skip
 			}
 
-		case things.ItemKindTombstone:
+		case things.ItemKindTombstone, things.ItemKindTombstonePlain:
 			item := things.TombstoneActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
 			oid := item.P.DeletedObjectID

@@ -73,7 +73,7 @@ func (s *Syncer) processItem(item things.Item, serverIndex int, ts time.Time) ([
 		return s.processTagItem(item, serverIndex, ts)
 	case things.ItemKindChecklistItem, things.ItemKindChecklistItem2, things.ItemKindChecklistItem3:
 		return s.processChecklistItem(item, serverIndex, ts)
-	case things.ItemKindTombstone:
+	case things.ItemKindTombstone, things.ItemKindTombstonePlain:
 		return s.processTombstone(item, serverIndex, ts)
 	default:
 		// Unknown item kind - create an UnknownChange

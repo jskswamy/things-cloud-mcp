@@ -70,10 +70,13 @@ var (
 	// ItemKindSettings  identifies a setting
 	ItemKindSettings ItemKind = "Settings3"
 	// ItemKindTag identifies a Tag
-	ItemKindTag      ItemKind = "Tag3"
-	ItemKindTag4     ItemKind = "Tag4"
-	ItemKindTagPlain  ItemKind = "Tag"
-	ItemKindTombstone ItemKind = "Tombstone2"
+	ItemKindTag            ItemKind = "Tag3"
+	ItemKindTag4           ItemKind = "Tag4"
+	ItemKindTagPlain       ItemKind = "Tag"
+	// ItemKindTombstone is the current deletion-record kind.
+	ItemKindTombstone      ItemKind = "Tombstone2"
+	// ItemKindTombstonePlain is the legacy deletion-record kind found in older histories.
+	ItemKindTombstonePlain ItemKind = "Tombstone"
 )
 
 // IsSettingsKind reports whether kind is a versioned Things settings record.

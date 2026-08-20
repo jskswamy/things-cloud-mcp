@@ -163,6 +163,25 @@ func TestFullRebuildIgnoresSettings5Metadata(t *testing.T) {
 	}
 }
 
+func TestFullRebuildAcceptsLegacyTombstone(t *testing.T) {
+	taskUUID := "task-deleted-by-legacy-tombstone"
+	fc := newFakeCloud("test@example.com",
+		makeTaskItem(taskUUID, withTitle("Deleted task")),
+		thingscloud.Item{
+			UUID:   "TOMBSTONE-E3F02B25-273A-4520-92C5-19AB2E53F0B6-20191229",
+			Kind:   thingscloud.ItemKindTombstonePlain,
+			Action: thingscloud.ItemActionCreated,
+			P:      json.RawMessage(`{"dloid":"` + taskUUID + `","dld":1577577600}`),
+		},
+	)
+	defer fc.Close()
+
+	tmcp := newTestThingsMCP(t, fc)
+	if task := tmcp.state.Tasks[taskUUID]; task != nil {
+		t.Fatalf("legacy Tombstone did not delete task during rebuild: %#v", task)
+	}
+}
+
 func TestUncertainCommitIsReconciledWithoutRetryingWrite(t *testing.T) {
 	var mu sync.Mutex
 	var committed map[string]json.RawMessage
