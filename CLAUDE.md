@@ -19,7 +19,7 @@ ships.
 
 No linter configured. Run tests with `/usr/local/go/bin/go test ./...`. Verify build with `go build ./...`.
 
-Environment variables: `PORT` (default 8080), `JWT_SECRET` (base64, auto-generated if unset), `DATA_DIR` (default `data/`, for SQLite), `THINGS_DEBUG` (enables SDK debug logging).
+Environment variables: `PORT` (default 8080), `JWT_SECRET` (base64, auto-generated if unset), `DATA_DIR` (default `data/`, for SQLite), `THINGS_DEBUG` (enables SDK debug logging), `MCP_TIMEZONE` (IANA zone for "today", defaults to the system zone).
 
 ## Architecture
 
