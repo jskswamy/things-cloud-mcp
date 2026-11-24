@@ -1202,7 +1202,8 @@ func getUserFromContext(ctx context.Context, um *UserManager) (*ThingsMCP, error
 
 // fullRebuild fetches all items into isolated cursor/state candidates and swaps
 // them in only after the complete history has been decoded successfully. It is
-// used only for initial construction, never as an automatic error fallback.
+// used for initial construction and, as the single automatic fallback, after
+// an account reset (recoverFromAccountReset). No other error triggers it.
 func (t *ThingsMCP) fullRebuild() error {
 	candidateHistory := t.client.HistoryWithID(t.history.ID)
 	startIndex := 0
@@ -1287,6 +1288,37 @@ func (t *ThingsMCP) incrementalSync() ([]thingscloud.Item, error) {
 	return delta, nil
 }
 
+// isAccountIssue reports the response Things Cloud gives for a history that no
+// longer exists.
+func isAccountIssue(err error) bool {
+	var apiErr *thingscloud.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound && apiErr.ThingsResponse == "AccountIssue"
+}
+
+// recoverFromAccountReset handles a Things Cloud account reset: the account
+// gets a new history and the old cursor is meaningless. It rebuilds from the
+// new history only when the account's history ID really changed, so a 404 that
+// persists for another reason does not refetch everything on every call.
+func (t *ThingsMCP) recoverFromAccountReset() bool {
+	own, err := t.client.OwnHistory()
+	if err != nil || own.ID == t.history.ID {
+		return false
+	}
+	old := t.history
+	t.mu.Lock()
+	t.history = own
+	t.mu.Unlock()
+	if err := t.fullRebuild(); err != nil {
+		t.mu.Lock()
+		t.history = old
+		t.mu.Unlock()
+		log.Printf("Account reset detected, but rebuilding from history %s failed: %v", own.ID, err)
+		return false
+	}
+	log.Printf("Account reset detected: switched from history %s to %s", old.ID, own.ID)
+	return true
+}
+
 func (t *ThingsMCP) getState() *memory.State {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -1312,6 +1344,9 @@ func (t *ThingsMCP) syncAndRebuild() error {
 
 	// Single-pass: Items() both checks for updates and returns them
 	_, err := t.incrementalSync()
+	if isAccountIssue(err) && t.recoverFromAccountReset() {
+		err = nil
+	}
 	if err == nil {
 		t.lastSyncAt = time.Now()
 	}

@@ -31,6 +31,7 @@ type fakeCloud struct {
 	commitLog      []json.RawMessage // captured bodies of accepted commits
 	commitAttempts int               // every POST, accepted or not
 	commitRejects  int               // reject this many commits with 409 OutdatedAncestor
+	goneHistoryID  string            // item fetches for this history get 404 AccountIssue
 }
 
 func newFakeCloud(email string, items ...thingscloud.Item) *fakeCloud {
@@ -76,6 +77,11 @@ func newFakeCloud(email string, items ...thingscloud.Item) *fakeCloud {
 	// GET /version/1/history/{id}/items — Items fetch
 	mux.HandleFunc("GET /version/1/history/{id}/items", func(w http.ResponseWriter, r *http.Request) {
 		startIdx := r.URL.Query().Get("start-index")
+		if fc.goneHistoryID != "" && r.PathValue("id") == fc.goneHistoryID {
+			w.Header().Set("Things-Response", "AccountIssue")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		if startIdx == "0" && len(fc.items) > 0 {

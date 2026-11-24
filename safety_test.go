@@ -659,3 +659,43 @@ func TestWriteGivesUpAfterRepeatedOutdatedAncestor(t *testing.T) {
 		t.Fatal("rejected task was applied to local state")
 	}
 }
+
+// After an account reset the account has a new history and the old cursor
+// answers 404 AccountIssue forever.
+func TestSyncRebuildsFromNewHistoryAfterAccountReset(t *testing.T) {
+	fc := newFakeCloud("test@example.com", makeTaskItem("before-reset", withTitle("Old")))
+	defer fc.Close()
+	tmcp := newTestThingsMCP(t, fc)
+
+	fc.goneHistoryID = fc.historyID
+	fc.historyID = "test-history-002"
+	fc.items = []thingscloud.Item{makeTaskItem("after-reset", withTitle("New"))}
+	fc.itemIndex = 1
+
+	if err := tmcp.syncAndRebuild(); err != nil {
+		t.Fatalf("sync after reset failed: %v", err)
+	}
+	if tmcp.history.ID != "test-history-002" {
+		t.Fatalf("history = %s, want the new one", tmcp.history.ID)
+	}
+	if tmcp.state.Tasks["after-reset"] == nil || tmcp.state.Tasks["before-reset"] != nil {
+		t.Fatalf("state was not rebuilt from the new history: %v", tmcp.state.Tasks)
+	}
+}
+
+// A 404 AccountIssue on the history the account still owns is not a reset.
+// It must surface, and must not refetch the whole history on every call.
+func TestSyncSurfacesAccountIssueWhenHistoryIsUnchanged(t *testing.T) {
+	fc := newFakeCloud("test@example.com", makeTaskItem("task-1", withTitle("Kept")))
+	defer fc.Close()
+	tmcp := newTestThingsMCP(t, fc)
+	fc.goneHistoryID = fc.historyID
+
+	err := tmcp.syncAndRebuild()
+	if err == nil || !strings.Contains(err.Error(), "AccountIssue") {
+		t.Fatalf("err = %v, want the AccountIssue to surface", err)
+	}
+	if tmcp.history.ID != "test-history-001" || tmcp.state.Tasks["task-1"] == nil {
+		t.Fatal("state or cursor changed although the history was not replaced")
+	}
+}

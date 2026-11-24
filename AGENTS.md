@@ -39,7 +39,7 @@ Synchronization is fail-closed:
 - Resolve and use the history key returned by `Verify`; never select the numerically largest history.
 - Initial load builds a candidate history and state, then swaps both only after every page and event validates.
 - Incremental sync uses a cloned cursor and applies a fully validated delta atomically.
-- Never automatically fall back to a full rebuild after an incremental error.
+- Never automatically fall back to a full rebuild after an incremental error. The one exception is an account reset: `404 AccountIssue` together with a changed own-history ID (`recoverFromAccountReset`).
 - Reject unknown schema versions, business-entity kinds, actions, malformed payloads, cursor regression, and no-progress pagination. Versioned `Settings<digits>` records are the explicit exception: they are account metadata and must be ignored so settings-only version bumps cannot block the task graph.
 
 Writes continue to use the unofficial Things Cloud endpoint so the server remains remote and multi-user. Preserve these safeguards:
@@ -47,7 +47,7 @@ Writes continue to use the unofficial Things Cloud endpoint so the server remain
 - Validate all item envelopes, UUIDs, relationships, dates, recurrence, and destructive confirmations before POST.
 - Active task lists inherit container state: a pending child of a completed, canceled, or trashed heading/project is not active and must not appear in default, Today, Upcoming, overview, or diagnostic active counts. Direct show/project-detail tools may still expose the child's raw status for inspection.
 - Creating or moving a task/heading requires every destination heading/project in its container chain to be pending and outside Trash; reject inactive destinations before POST.
-- A transport failure or malformed response after POST is an uncertain commit. Reconcile by reading the authoritative history; never retry that POST automatically.
+- A transport failure or malformed response after POST is an uncertain commit. Reconcile by reading the authoritative history; never retry that POST automatically. A clean `409 OutdatedAncestor` rejection wrote nothing and is resent after repeating the pre-write sequence, at most `maxWriteAttempts` times in total.
 - After a confirmed commit, apply the exact validated events and server head locally so a successful write cannot be reported as a false failure.
 - Recurring creation is a single atomic commit containing a recurrence template and its visible instance.
 - Permanent area, tag, and checklist deletion requires `confirm=true`; stopping recurrence requires `confirm_destructive=true`.
