@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	thingscloud "github.com/arthursoares/things-cloud-sdk"
 	memory "github.com/arthursoares/things-cloud-sdk/state/memory"
+	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -232,14 +234,15 @@ func TestUncertainCommitIsReconciledWithoutRetryingWrite(t *testing.T) {
 		history: &thingscloud.History{Client: client, ID: "history", LatestSchemaVersion: 301},
 		state:   memory.NewState(),
 	}
-	envelope := writeEnvelope{id: "task-1", action: 0, kind: "Task6", payload: map[string]any{"tt": "reconciled"}}
+	taskID := generateUUID()
+	envelope := writeEnvelope{id: taskID, action: 0, kind: "Task6", payload: map[string]any{"tt": "reconciled"}}
 	if err := tmcp.writeAndSync(envelope); err != nil {
 		t.Fatalf("reconciled write failed: %v", err)
 	}
 	if postCount != 1 {
 		t.Fatalf("commit was retried %d times", postCount)
 	}
-	if task := tmcp.state.Tasks["task-1"]; task == nil || task.Title != "reconciled" {
+	if task := tmcp.state.Tasks[taskID]; task == nil || task.Title != "reconciled" {
 		t.Fatalf("reconciled task missing: %#v", task)
 	}
 	if tmcp.history.LoadedServerIndex != 1 {
@@ -578,4 +581,41 @@ func containsRune(s string, want rune) bool {
 		}
 	}
 	return false
+}
+
+func TestGenerateUUIDAlwaysDecodesToSixteenBytes(t *testing.T) {
+	for i := 0; i < 100000; i++ {
+		id := generateUUID()
+		if err := thingscloud.ValidateUUID(id); err != nil {
+			t.Fatalf("generated identifier %q is invalid: %v", id, err)
+		}
+	}
+}
+
+func TestCreationWithUndecodableIdentifierIsRefusedBeforeCommit(t *testing.T) {
+	fc := newFakeCloud("test@example.com")
+	defer fc.Close()
+	tmcp := newTestThingsMCP(t, fc)
+
+	// What the old generator produced for a UUID with a leading zero byte:
+	// the padding character is missing, so it decodes to 15 bytes.
+	short := strings.TrimLeft(thingscloud.EncodeUUID(uuid.UUID{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}), "1")
+	err := tmcp.writeAndSync(writeEnvelope{id: short, action: 0, kind: "Task6", payload: map[string]any{"tt": "x"}})
+	if err == nil {
+		t.Fatal("creation with an undecodable identifier was accepted")
+	}
+	if n := len(fc.getCommitLog()); n != 0 {
+		t.Fatalf("commits sent = %d, want 0", n)
+	}
+}
+
+func TestEditOfItemWithLegacyIdentifierIsNotRefused(t *testing.T) {
+	const legacy = "ABCDEF01-2345-6789-ABCD-EF0123456789"
+	items, err := identifiableItems([]thingscloud.Identifiable{
+		writeEnvelope{id: legacy, action: 1, kind: "Task6", payload: map[string]any{"tt": "renamed"}},
+		writeEnvelope{id: legacy, action: 2, kind: "Task6", payload: map[string]any{}},
+	})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("edit/delete of a legacy identifier refused: items=%d err=%v", len(items), err)
+	}
 }

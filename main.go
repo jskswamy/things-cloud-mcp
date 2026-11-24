@@ -12,7 +12,6 @@ import (
 	"hash/crc32"
 	"hash/fnv"
 	"log"
-	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -174,20 +173,7 @@ func defaultExtension() WireExtension {
 }
 
 func generateUUID() string {
-	u := uuid.New()
-	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	n := new(big.Int).SetBytes(u[:])
-	base := big.NewInt(58)
-	mod := new(big.Int)
-	var encoded []byte
-	for n.Sign() > 0 {
-		n.DivMod(n, base, mod)
-		encoded = append(encoded, alphabet[mod.Int64()])
-	}
-	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
-		encoded[i], encoded[j] = encoded[j], encoded[i]
-	}
-	return string(encoded)
+	return thingscloud.NewUUID()
 }
 
 func nowTs() float64 {
@@ -1361,6 +1347,13 @@ func identifiableItems(items []thingscloud.Identifiable) ([]thingscloud.Item, er
 		}
 		if err := json.Unmarshal(bs, &envelope); err != nil {
 			return nil, fmt.Errorf("decode %s envelope: %w", identifiable.UUID(), err)
+		}
+		// Only creations are checked: edits and deletions address identifiers
+		// that already exist in the account, and old accounts hold legacy ones.
+		if envelope.Action == thingscloud.ItemActionCreated {
+			if err := thingscloud.ValidateUUID(identifiable.UUID()); err != nil {
+				return nil, fmt.Errorf("refusing to create an item Things cannot decode: %w", err)
+			}
 		}
 		out = append(out, thingscloud.Item{UUID: identifiable.UUID(), Action: envelope.Action, Kind: envelope.Kind, P: envelope.Payload})
 	}
