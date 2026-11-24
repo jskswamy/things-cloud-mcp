@@ -559,6 +559,9 @@ func TestDiagnoseUsesAuthoritativeHistoryAndFixedPagination(t *testing.T) {
 	if report.Summary.Failed != 0 || len(report.Steps) != 7 {
 		t.Fatalf("diagnosis failed: summary=%+v errors=%v", report.Summary, report.Errors)
 	}
+	if raw, _ := json.Marshal(report); strings.Contains(string(raw), `"warnings":null`) || strings.Contains(string(raw), `"errors":null`) {
+		t.Fatalf("healthy report marshals a null array: %s", raw)
+	}
 	fetch := report.Steps[3]
 	details, ok := fetch.Details.(map[string]any)
 	if !ok {

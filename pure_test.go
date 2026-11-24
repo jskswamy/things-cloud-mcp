@@ -533,3 +533,18 @@ func TestIsUntitledTask(t *testing.T) {
 		})
 	}
 }
+
+// A healthy account has no warnings and no errors, and the output schema
+// declares both as arrays, so they must never marshal to null.
+func TestDiagReportMarshalsEmptyArraysNotNull(t *testing.T) {
+	raw, err := json.Marshal(newDiagReport())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{`"steps":[]`, `"warnings":[]`, `"errors":[]`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
+	}
+}

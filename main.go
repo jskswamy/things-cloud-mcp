@@ -2115,10 +2115,17 @@ func extractCredentials(ctx context.Context, um *UserManager) (string, string, e
 // Diagnostic handler: steps 1-3
 // ---------------------------------------------------------------------------
 
+// newDiagReport returns a report whose slices are empty rather than nil. The
+// output schema declares them as arrays and MCP clients validate against it; a
+// nil slice marshals to null and the client rejects the whole call.
+func newDiagReport() *diagReport {
+	return &diagReport{Steps: []diagStep{}, Warnings: []string{}, Errors: []string{}}
+}
+
 func (t *ThingsMCP) handleDiagnose(email, password string) *diagReport {
-	report := &diagReport{}
-	var allWarnings []string
-	var allErrors []string
+	report := newDiagReport()
+	allWarnings := []string{}
+	allErrors := []string{}
 
 	// Step 1: credential_verification
 	step1 := diagStep{
