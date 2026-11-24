@@ -1,6 +1,7 @@
 package thingscloud
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,23 @@ func (e *APIError) Error() string {
 // IsAbusePrevention reports whether the error is a Things Cloud abuse prevention block.
 func (e *APIError) IsAbusePrevention() bool {
 	return e.StatusCode == http.StatusTooManyRequests && e.ThingsResponse == "AbusePrevention"
+}
+
+// abuseBackoff is how long a read waits before each retry of a request that
+// Things Cloud answered with 429 AbusePrevention.
+var abuseBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+
+func isAbusePrevention(resp *http.Response) bool {
+	return newAPIError(resp).IsAbusePrevention()
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 // newAPIError creates an APIError from an HTTP response.
@@ -95,6 +113,7 @@ type Client struct {
 
 	client      *http.Client
 	rateLimiter *rate.Limiter
+	abuseWait   func(context.Context, time.Duration) error
 	common      service
 
 	Accounts *AccountService
@@ -139,6 +158,7 @@ func New(endpoint, email, password string, opts ...ClientOption) *Client {
 		ClientInfo:  DefaultClientInfo(),
 		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 		client:      &http.Client{Timeout: defaultHTTPTimeout},
+		abuseWait:   sleepContext,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -190,6 +210,18 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	}
 
 	resp, err := c.client.Do(req)
+	// Reads are safe to repeat, so wait out an abuse prevention block. A write
+	// is never resent here: the caller decides what a failed commit means.
+	for _, wait := range abuseBackoff {
+		if err != nil || req.Method != http.MethodGet || !isAbusePrevention(resp) {
+			break
+		}
+		resp.Body.Close()
+		if err := c.abuseWait(req.Context(), wait); err != nil {
+			return nil, err
+		}
+		resp, err = c.client.Do(req)
+	}
 	if c.Debug {
 		if err == nil {
 			bs, _ := httputil.DumpResponse(resp, true)
