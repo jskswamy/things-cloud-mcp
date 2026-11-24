@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Direction
+
+Standalone Go project. Do not sync from `wbopan/things-cloud-mcp` (now a
+TypeScript Cloudflare Worker). The SDK tracks
+`arthursoares/things-cloud-sdk`; SDK-level fixes go upstream as pull
+requests. Follow `docs/sdk-workflow.md` for where a fix belongs and how it
+ships.
+
 ## Build & Run
 
 ```bash

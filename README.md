@@ -2,9 +2,20 @@
 
 An MCP server that connects AI assistants to Things 3 via Things Cloud.
 
-**Public endpoint: https://thingscloudmcp.com**
+## Project status
 
-Add this URL to your MCP client and start managing Things 3 tasks with AI. Multi-user — each user authenticates with their own Things Cloud credentials.
+This is a standalone Go implementation of the Things Cloud MCP server,
+maintained independently. It began as a fork of
+[wbopan/things-cloud-mcp](https://github.com/wbopan/things-cloud-mcp),
+which has since been rewritten as a TypeScript Cloudflare Worker; this
+project does not follow that rewrite. It stays on Go and builds on
+[arthursoares/things-cloud-sdk](https://github.com/arthursoares/things-cloud-sdk),
+which it continues to track. Fixes that belong in the SDK are made there
+and sent upstream as pull requests; see
+[docs/sdk-workflow.md](docs/sdk-workflow.md).
+
+It runs as a single self-hosted binary. Multi-user — each user
+authenticates with their own Things Cloud credentials.
 
 ## Features
 
