@@ -651,7 +651,7 @@ func recurringTemplateForEdit(task *thingscloud.Task, req mcp.CallToolRequest, r
 		Tr: false, Dl: append([]string(nil), task.DelegateIDs...), Icp: false,
 		St: int(thingscloud.TaskScheduleAnytime), Ar: areas, Tt: title,
 		Do: task.DueOrder, Tir: &nextOccurrence, Tg: tags, Agr: headings,
-		Ix: task.Index, Cd: nowTs(), Lt: false, Icc: 0, Ti: 0, Dd: deadline,
+		Ix: max(task.Index, minSortIndex), Cd: nowTs(), Lt: false, Icc: 0, Ti: 0, Dd: deadline,
 		Ato: task.AlarmTimeOffset, Nt: textNote(note), Icsd: &today, Pr: projects,
 		Sb: 0, Rr: rr, Xx: defaultExtension(),
 	}
@@ -1280,18 +1280,72 @@ func (t *ThingsMCP) syncAndRebuild() error {
 	return err
 }
 
-func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {
+// minSortIndex is the smallest sort index Things tolerates. Its sync engine
+// crashes on every device when it processes a Task6 commit for an item whose
+// sort index (ix) is zero or negative.
+const minSortIndex = 1
+
+// healNonPositiveIndex makes sure every Task6 update leaves the item with a
+// sort index Things can process. Some old items carry a non-positive ix in the
+// cloud; editing one re-emits it even when the edit never touches ix (a trash,
+// for example). An explicitly written ix is clamped, and an item whose stored
+// ix is non-positive gets a safe one added to the same commit. Creations clamp
+// at the source (nextTopIndexBelow).
+func (t *ThingsMCP) healNonPositiveIndex(items []thingscloud.Identifiable) {
+	state := t.getState()
+	for _, it := range items {
+		we, ok := it.(writeEnvelope)
+		if !ok || we.kind != "Task6" || we.action != 1 {
+			continue
+		}
+		p, ok := we.payload.(map[string]any)
+		if !ok {
+			continue
+		}
+		if raw, set := p["ix"]; set {
+			if iv, ok := raw.(int); ok && iv < minSortIndex {
+				p["ix"] = minSortIndex
+			}
+			continue
+		}
+		if state == nil {
+			continue
+		}
+		if task, ok := state.Tasks[we.id]; ok && task.Index < minSortIndex {
+			p["ix"] = minSortIndex
+		}
+	}
+}
+
+// validatedItems converts a commit to wire items and checks that the local
+// state model accepts it.
+func validatedItems(items []thingscloud.Identifiable) ([]thingscloud.Item, error) {
 	expected, err := identifiableItems(items)
 	if err != nil {
-		return fmt.Errorf("validate commit: %w", err)
+		return nil, fmt.Errorf("validate commit: %w", err)
 	}
 	if err := memory.NewState().Update(expected...); err != nil {
-		return fmt.Errorf("validate commit payload: %w", err)
+		return nil, fmt.Errorf("validate commit payload: %w", err)
+	}
+	return expected, nil
+}
+
+func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {
+	// Refuse an invalid commit before any network call.
+	if _, err := validatedItems(items); err != nil {
+		return err
 	}
 
 	// Pre-write: sync remote changes and update LatestServerIndex for ancestor-index
 	if _, err := t.incrementalSync(); err != nil {
 		return fmt.Errorf("pre-write sync: %w", err)
+	}
+	// The guard needs the state the sync just refreshed, and the local apply
+	// below needs the items as the guard left them.
+	t.healNonPositiveIndex(items)
+	expected, err := validatedItems(items)
+	if err != nil {
+		return err
 	}
 	if err := t.history.Write(items...); err != nil {
 		var uncertain *thingscloud.CommitUncertainError
