@@ -1368,24 +1368,46 @@ func validatedItems(items []thingscloud.Identifiable) ([]thingscloud.Item, error
 	return expected, nil
 }
 
+// maxWriteAttempts bounds how often a commit is sent when another device keeps
+// committing between the pre-write sync and the write.
+const maxWriteAttempts = 3
+
+// isOutdatedAncestor reports a commit that Things Cloud cleanly rejected
+// because the history moved on since the pre-write sync. Nothing was written,
+// so sending it again on top of the new state is safe.
+func isOutdatedAncestor(err error) bool {
+	var apiErr *thingscloud.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict && apiErr.ThingsResponse == "OutdatedAncestor"
+}
+
 func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {
 	// Refuse an invalid commit before any network call.
 	if _, err := validatedItems(items); err != nil {
 		return err
 	}
 
-	// Pre-write: sync remote changes and update LatestServerIndex for ancestor-index
-	if _, err := t.incrementalSync(); err != nil {
-		return fmt.Errorf("pre-write sync: %w", err)
-	}
-	// The guard needs the state the sync just refreshed, and the local apply
-	// below needs the items as the guard left them.
-	t.healNonPositiveIndex(items)
-	expected, err := validatedItems(items)
-	if err != nil {
-		return err
-	}
-	if err := t.history.Write(items...); err != nil {
+	var expected []thingscloud.Item
+	for attempt := 1; ; attempt++ {
+		// Pre-write: sync remote changes and update LatestServerIndex for ancestor-index
+		if _, err := t.incrementalSync(); err != nil {
+			return fmt.Errorf("pre-write sync: %w", err)
+		}
+		// The guard needs the state the sync just refreshed, and the local
+		// apply below needs the items as the guard left them.
+		t.healNonPositiveIndex(items)
+		var err error
+		if expected, err = validatedItems(items); err != nil {
+			return err
+		}
+		err = t.history.Write(items...)
+		if err == nil {
+			break
+		}
+		// Repeat the whole sequence so the commit is always based on, and
+		// guarded against, the state it is sent on top of.
+		if isOutdatedAncestor(err) && attempt < maxWriteAttempts {
+			continue
+		}
 		var uncertain *thingscloud.CommitUncertainError
 		if errors.As(err, &uncertain) {
 			delta, syncErr := t.incrementalSync()

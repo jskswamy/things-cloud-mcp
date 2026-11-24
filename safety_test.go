@@ -622,3 +622,40 @@ func TestEditOfItemWithLegacyIdentifierIsNotRefused(t *testing.T) {
 		t.Fatalf("edit/delete of a legacy identifier refused: items=%d err=%v", len(items), err)
 	}
 }
+
+func TestWriteIsResentAfterOutdatedAncestor(t *testing.T) {
+	fc := newFakeCloud("test@example.com")
+	defer fc.Close()
+	tmcp := newTestThingsMCP(t, fc)
+	fc.commitRejects = 1
+
+	id := generateUUID()
+	if err := tmcp.writeAndSync(writeEnvelope{id: id, action: 0, kind: "Task6", payload: map[string]any{"tt": "kept"}}); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if fc.commitAttempts != 2 || len(fc.getCommitLog()) != 1 {
+		t.Fatalf("attempts = %d, accepted = %d; want one rejection and one resend", fc.commitAttempts, len(fc.getCommitLog()))
+	}
+	if task := tmcp.state.Tasks[id]; task == nil || task.Title != "kept" {
+		t.Fatalf("task missing from local state: %#v", task)
+	}
+}
+
+func TestWriteGivesUpAfterRepeatedOutdatedAncestor(t *testing.T) {
+	fc := newFakeCloud("test@example.com")
+	defer fc.Close()
+	tmcp := newTestThingsMCP(t, fc)
+	fc.commitRejects = 10
+
+	id := generateUUID()
+	err := tmcp.writeAndSync(writeEnvelope{id: id, action: 0, kind: "Task6", payload: map[string]any{"tt": "lost"}})
+	if err == nil || !strings.Contains(err.Error(), "OutdatedAncestor") {
+		t.Fatalf("err = %v, want the rejection to surface", err)
+	}
+	if fc.commitAttempts != maxWriteAttempts {
+		t.Fatalf("attempts = %d, want %d", fc.commitAttempts, maxWriteAttempts)
+	}
+	if tmcp.state.Tasks[id] != nil {
+		t.Fatal("rejected task was applied to local state")
+	}
+}

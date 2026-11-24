@@ -27,8 +27,10 @@ type fakeCloud struct {
 	items     []thingscloud.Item
 	itemIndex int // current-item-index to report
 
-	mu        sync.Mutex
-	commitLog []json.RawMessage // captured POST bodies
+	mu             sync.Mutex
+	commitLog      []json.RawMessage // captured bodies of accepted commits
+	commitAttempts int               // every POST, accepted or not
+	commitRejects  int               // reject this many commits with 409 OutdatedAncestor
 }
 
 func newFakeCloud(email string, items ...thingscloud.Item) *fakeCloud {
@@ -108,6 +110,14 @@ func newFakeCloud(email string, items ...thingscloud.Item) *fakeCloud {
 	mux.HandleFunc("POST /version/1/history/{id}/commit", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		fc.mu.Lock()
+		fc.commitAttempts++
+		if fc.commitRejects > 0 {
+			fc.commitRejects--
+			fc.mu.Unlock()
+			w.Header().Set("Things-Response", "OutdatedAncestor")
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
 		fc.commitLog = append(fc.commitLog, json.RawMessage(body))
 		fc.itemIndex++
 		fc.mu.Unlock()
